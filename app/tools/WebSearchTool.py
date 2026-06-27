@@ -7,10 +7,9 @@ Date: 2026-06-25 14:30:47
 LastEditors: HongJin
 LastEditTime: 2026-06-25 14:30:47
 '''
-from tools.BaseTool import BaseTool, register_tool
+from tools.BaseTool import BaseTool
 
 
-@register_tool
 class WebSearchTool(BaseTool):
     """
     网络搜索工具，用于搜索互联网上的信息

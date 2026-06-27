@@ -1,121 +1,102 @@
-'''
-Descripttion: Agent ReAct 链模拟测试
-version: 1.0.0
-Author: HongJin
-Date: 2026-06-25
-'''
-import json
-from tools.BaseTool import ToolRegistry, BaseTool, register_tool
+# ========================================================================
+# 方式1: 直接调用 discover_and_wrap_tools() 获取 tool_map
+#   注意: 直接运行脚本时 __name__ 为 __main__，无法自动推断包名，需显式传入
+# ========================================================================
+from tools import tool_map
 
+# ========================================================================
+# 方式2: 从 tools 包的 __init__.py 导入（推荐，包加载时已自动扫描）
+#   from tools import tool_map
+#   此方式无需显式传包名，因为 __init__.py 中调用时能正确推断
+# ========================================================================
 
-@register_tool
-class CalculatorTool(BaseTool):
-    """
-    计算器工具，用于执行数学运算
-    """
-    name = "calculator"
-    description = "用于执行数学计算。当你需要计算表达式、统计数据或进行数值分析时使用此工具。"
-    param_descriptions = {
-        "expression": "数学表达式，必填，例如 '2 + 3 * 4' 或 '10 / 2 + 5'",
-    }
-    examples = [
-        {
-            "user_input": "帮我计算一下 123 加 456 等于多少",
-            "model_params": {"expression": "123 + 456"},
-            "return_value": "579",
-        },
-        {
-            "user_input": "5 的平方是多少？",
-            "model_params": {"expression": "5 ** 2"},
-            "return_value": "25",
-        },
-    ]
+# --- 查看 tool_map 中的工具 ---
+print("\n🧰 当前已注册的工具:")
+for name, lc_tool_obj in tool_map.items():
+    print(f"   - {name}: {lc_tool_obj.description[:30]}...")
 
-    def _tool_call(self, expression: str) -> str:
-        """
-        执行数学表达式
+print(tool_map)
 
-        Args:
-            expression: 数学表达式字符串
+# --- 将工具 bind 给 LLM ---
+# llm_with_tools = llm.bind_tools(list(tool_map.values()))
+# response = llm_with_tools.invoke("帮我读一下 config.yaml")
 
-        Returns:
-            str: 计算结果
-        """
-        try:
-            result = eval(expression, {"__builtins__": {}}, {})
-            return str(result)
-        except Exception as e:
-            return f"计算错误: {e}"
+# --- 单独调用某个工具 ---
+# result = tool_map["file_manager"].invoke({"action": "read", "file_path": "config.yaml"})
+# print(result)
 
+from langchain_ollama import ChatOllama
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
-def simulate_react_chain(user_input: str):
-    """
-    模拟 Agent 的 ReAct 决策链
+llm = ChatOllama(model="qwen3-vl:4b")
 
-    流程:
-    1. LLM 根据用户输入决定调用哪个工具（这里简化为关键词匹配）
-    2. 解析工具名和参数
-    3. 执行工具
-    4. 输出完整流程
-    """
-    print("=" * 60)
-    print(f"用户输入: {user_input}")
-    print("=" * 60)
+# bind 工具到 LLM
+llm_with_tools = llm.bind_tools(list(tool_map.values()))
 
-    # 模拟 LLM 决策（关键词匹配）
-    if "天气" in user_input or "搜索" in user_input:
-        tool_name = "web_search"
-        params = {"query": user_input.replace("搜索", "").replace("天气", "").strip()}
-    elif "计算" in user_input or any(op in user_input for op in ["+", "-", "*", "/", "**"]):
-        tool_name = "calculator"
-        import re
-        expr_match = re.search(r'[\d\+\-\*\/\.\s\*\*]+', user_input)
-        params = {"expression": expr_match.group().strip()} if expr_match else {"expression": "0"}
-    elif "读" in user_input or "文件" in user_input:
-        tool_name = "file_manager"
-        params = {"action": "read", "file_path": "config.yaml"}
+print("\n" + "=" * 60)
+print("🔄 开始模拟 ReAct 链")
+print("=" * 60)
+
+# 测试用例
+test_cases = [
+    "帮我计算一下 123 + 456 等于多少",
+    "帮我计算'3+5+8+10/2'等于多少",
+]
+
+# 最大 ReAct 轮数，防止死循环
+MAX_ITERATIONS = 5
+
+for case in test_cases:
+    print(f"\n{'='*60}")
+    print(f"👤 用户: {case}")
+    print(f"{'='*60}")
+
+    # 消息历史，初始只有用户输入
+    messages = [HumanMessage(content=case)]
+
+    for i in range(MAX_ITERATIONS):
+        # 调用 LLM（流式输出）
+        print(f"\n--- 第 {i+1} 轮 ---")
+        print("🤖: ", end="", flush=True)
+
+        # 流式调用 LLM
+        collected_chunks = []
+        for chunk in llm_with_tools.stream(messages):
+            collected_chunks.append(chunk)
+            # 如果有文本内容，流式打印
+            if chunk.content:
+                print(chunk.content, end="", flush=True)
+
+        # 合并流式 chunk 为完整 response
+        # 第一个 chunk 包含完整信息，后续 chunk 是增量
+        full_response = collected_chunks[0]
+        for chunk in collected_chunks[1:]:
+            full_response = full_response + chunk
+
+        print()  # 换行
+
+        # 将 AI 回复加入消息历史
+        messages.append(full_response)
+
+        # 检查是否有工具调用
+        if not full_response.tool_calls:
+            # 没有工具调用，说明模型已经给出最终回答
+            print("✅ 模型给出最终回答，ReAct 结束")
+            break
+
+        # 执行所有工具调用，将结果返回给模型
+        for tc in full_response.tool_calls:
+            print("---------go to use tool---------")
+            tool_name = tc["name"]
+            tool_args = tc["args"]
+            print(f"\n⚙️  调用工具: {tool_name}")
+            print(f"   参数: {tool_args}")
+
+            # 执行工具
+            tool_result = tool_map[tool_name].invoke(tool_args)
+            print(f"   结果: {tool_result}")
+
+            # 将工具执行结果作为 ToolMessage 加入消息历史，供模型下一轮思考
+            messages.append(ToolMessage(content=str(tool_result), tool_call_id=tc["id"]))
     else:
-        print("\n🤔 LLM 决定: 无需工具，直接回答\n")
-        print(f"📝 最终回答: 我需要更多信息来回答您的问题。")
-        return
-
-    # 决策结果
-    print(f"\n🤔 LLM 决策:")
-    print(f"   思考: 用户需要【{tool_name}】来处理这个请求")
-    print(f"   参数: {json.dumps(params, ensure_ascii=False)}")
-
-    # 执行工具
-    print(f"\n⚙️  执行工具: {tool_name}")
-    print(f"   参数: {params}")
-    try:
-        result = ToolRegistry.execute_tool(tool_name, **params)
-        print(f"   结果: {result}")
-    except Exception as e:
-        result = f"执行失败: {e}"
-        print(f"   错误: {result}")
-
-    print(f"\n📝 最终回答: 根据【{tool_name}】的执行结果，答案是: {result}")
-    print("=" * 60)
-
-
-if __name__ == "__main__":
-    print("\n🧰 当前已注册的工具:")
-    tools = ToolRegistry.list_tools()
-    for t in tools:
-        print(f"   - {t['name']}: {t['description'][:30]}...")
-
-    print("\n" + "=" * 60)
-    print("🔄 开始模拟 ReAct 链")
-    print("=" * 60)
-
-    # 测试用例
-    test_cases = [
-        "帮我计算一下 123 + 456 等于多少",
-        "搜索一下今天北京的天气",
-    ]
-
-    for i, case in enumerate(test_cases, 1):
-        print(f"\n📌 测试用例 {i}/{len(test_cases)}")
-        simulate_react_chain(case)
-
-    print("\n✅ 测试完成")
+        print("\n⚠️ 已达到最大轮数限制，强制结束")

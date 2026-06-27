@@ -1,14 +1,13 @@
 '''
 Descripttion: Agent ReAct 链模拟测试
-version: 1.0.0
+version: 2.0.0
 Author: HongJin
 Date: 2026-06-25
 '''
 import json
-from tools.BaseTool import ToolRegistry, BaseTool, register_tool
+from tools.BaseTool import BaseTool, discover_and_wrap_tools
 
 ## 测试工具
-@register_tool
 class CalculatorTool(BaseTool):
     """
     计算器工具，用于执行数学运算
@@ -48,15 +47,19 @@ class CalculatorTool(BaseTool):
             return f"计算错误: {e}"
 
 
-def simulate_react_chain(user_input: str):
+def simulate_react_chain(user_input: str, tool_map: dict):
     """
     模拟 Agent 的 ReAct 决策链
 
     流程:
     1. LLM 根据用户输入决定调用哪个工具（这里简化为关键词匹配）
     2. 解析工具名和参数
-    3. 执行工具
+    3. 通过 langchain Tool 的 invoke 方法执行工具
     4. 输出完整流程
+
+    Args:
+        user_input: 用户输入
+        tool_map: 工具名称 -> langchain Tool 对象的映射字典
     """
     print("=" * 60)
     print(f"用户输入: {user_input}")
@@ -84,11 +87,12 @@ def simulate_react_chain(user_input: str):
     print(f"   思考: 用户需要【{tool_name}】来处理这个请求")
     print(f"   参数: {json.dumps(params, ensure_ascii=False)}")
 
-    # 执行工具
+    # 执行工具（通过 langchain Tool 的 invoke 方法）
     print(f"\n⚙️  执行工具: {tool_name}")
     print(f"   参数: {params}")
     try:
-        result = ToolRegistry.execute_tool(tool_name, **params)
+        lc_tool_obj = tool_map[tool_name]
+        result = lc_tool_obj.invoke(params)
         print(f"   结果: {result}")
     except Exception as e:
         result = f"执行失败: {e}"
@@ -99,10 +103,36 @@ def simulate_react_chain(user_input: str):
 
 
 if __name__ == "__main__":
+    # ========================================================================
+    # 方式1: 直接调用 discover_and_wrap_tools() 获取 tool_map
+    #   注意: 直接运行脚本时 __name__ 为 __main__，无法自动推断包名，需显式传入
+    # ========================================================================
+    from tools import tool_map
+
+    # ========================================================================
+    # 方式2: 从 tools 包的 __init__.py 导入（推荐，包加载时已自动扫描）
+    #   from tools import tool_map
+    #   此方式无需显式传包名，因为 __init__.py 中调用时能正确推断
+    # ========================================================================
+
+    # --- 查看 tool_map 中的工具 ---
     print("\n🧰 当前已注册的工具:")
-    tools = ToolRegistry.list_tools()
-    for t in tools:
-        print(f"   - {t['name']}: {t['description'][:30]}...")
+    for name, lc_tool_obj in tool_map.items():
+        print(f"   - {name}: {lc_tool_obj.description[:30]}...")
+
+    # --- 将工具 bind 给 LLM ---
+    # llm_with_tools = llm.bind_tools(list(tool_map.values()))
+    # response = llm_with_tools.invoke("帮我读一下 config.yaml")
+
+    # --- 单独调用某个工具 ---
+    # result = tool_map["file_manager"].invoke({"action": "read", "file_path": "config.yaml"})
+    # print(result)
+
+    from langchain_ollama import ChatOllama
+
+    llm = ChatOllama(model="qwen3-vl:4b")
+
+    llm.bind_tools(tool_map)
 
     print("\n" + "=" * 60)
     print("🔄 开始模拟 ReAct 链")
@@ -114,8 +144,12 @@ if __name__ == "__main__":
         "搜索一下今天北京的天气",
     ]
 
-    for i, case in enumerate(test_cases, 1):
-        print(f"\n📌 测试用例 {i}/{len(test_cases)}")
-        simulate_react_chain(case)
+    for case in test_cases:
+        response = llm.invoke(case)
+        print(response)
+        if response.tool_calls:
+            for tc in response.tool_calls:
+                print(f"工具: {tc['name']}")
+                print(f"参数: {tc['args']}")
 
-    print("\n✅ 测试完成")
+                print(tool_map[tc['name']].invoke(tc['args']))

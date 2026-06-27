@@ -7,11 +7,10 @@ Date: 2026-06-25 14:30:47
 LastEditors: HongJin
 LastEditTime: 2026-06-25 14:30:47
 '''
-from tools.BaseTool import BaseTool, register_tool
+from tools.BaseTool import BaseTool
 import os
 
 
-@register_tool
 class FileManagerTool(BaseTool):
     """
     文件管理工具，用于读取和写入文件
