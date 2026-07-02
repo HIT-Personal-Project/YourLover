@@ -22,14 +22,12 @@ class EmotionState(TypedDict):
         history: 记忆列表，包含用户和助手的对话记录（带元数据的完整记忆）
         love: 好感度，用于存储用户对助手的好感度，默认值为0
         user_input: 当前用户输入（用于临时存储）
-        memory_loaded: 是否已加载记忆（用于路由判断）
     """
 
     messages: Annotated[list, add_messages]
     history: Annotated[List[MemoryItem], operator.add]
     love: Annotated[int, operator.add]
     user_input: str
-    memory_loaded: bool
 
 
 def history_to_messages(history: List[MemoryItem]) -> List[BaseMessage]:
