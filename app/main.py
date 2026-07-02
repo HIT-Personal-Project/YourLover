@@ -43,7 +43,7 @@ if __name__ == "__main__":
         )
 
         last_memory = state["history"][-1]
-        print(f"🤖 AI: {last_memory.text}")
+        print(f"🤖 AI: {last_memory.message.content}")
         print(f"💖 当前好感度: {state['love']}")
         print(f"📝 记忆总数: {len(state['history'])}")
 

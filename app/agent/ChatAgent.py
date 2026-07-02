@@ -11,12 +11,7 @@ LastEditTime: 2026-07-02
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        ChatAgent 状态流转图                         │
 ├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│    START ──┬──→ load_memory ──→ user_input ──→ llm ──→ END         │
-│            │                                                      │
-│            └─────────────────→ user_input ───────────────────────┘│
-│                                    ↑                               │
-│                              memory_loaded=True                    │
+│                  │
 │                                                                     │
 ├─────────────────────────────────────────────────────────────────────┤
 │  节点职责:                                                          │
@@ -37,7 +32,7 @@ from tools import tool_map
 from config import Settings, settings
 
 # from models.OllamaModels import get_ollama_llm, get_ollama_embeddings
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 
 from langgraph.graph import StateGraph, END, START, MessagesState
@@ -129,8 +124,9 @@ class ChatAgent:
         工作流结构:
         1. START → 条件路由 → load_memory（首次）或 user_input（非首次）
         2. load_memory → user_input
-        3. user_input → llm
-        4. llm → END
+        3. user_input → emotion_analysis
+        4. emotion_analysis → llm
+        5. llm → END
 
         使用MemorySaver作为检查点，实现会话状态持久化
         """
@@ -139,6 +135,7 @@ class ChatAgent:
 
         # 添加工作流节点
         graph.add_node('load_memory', self._load_memory)   # 记忆加载节点
+        graph.add_node('emotion_analysis', self._emotion_analysis)  # 情感分析节点
         graph.add_node('user_input', self._user_input)       # 用户输入处理节点
         # graph.add_tool_node('tools', self.tools)  # 工具调用节点（暂未实现）
         graph.add_node('llm', self._chat)                    # LLM调用节点
@@ -154,8 +151,9 @@ class ChatAgent:
         )
 
         # 状态流转边
-        graph.add_edge("load_memory", "user_input")  # 加载完成后处理输入
-        graph.add_edge("user_input", "llm")          # 输入处理后调用LLM
+        graph.add_edge("user_input", "emotion_analysis")  # 输入处理后进行情感分析
+        graph.add_edge("load_memory", "user_input")  # 情感分析后处理输入
+        graph.add_edge("emotion_analysis", "llm")          # 输入处理后调用LLM
         graph.add_edge("llm", END)                   # LLM回复后结束
 
         # 编译工作流，启用检查点持久化
@@ -168,8 +166,8 @@ class ChatAgent:
         条件路由函数：决定首次会话还是后续会话
 
         判断逻辑:
-        - 如果 state["memory_loaded"] 为 False 或不存在 → 进入 load_memory
-        - 如果 state["memory_loaded"] 为 True → 进入 user_input（跳过加载）
+        - 如果 memory_loaded 为 False 或不存在 → 进入 load_memory
+        - 如果 memory_loaded 为 True → 进入 user_input（跳过加载）
 
         Args:
             state: 当前EmotionState状态对象
@@ -226,7 +224,7 @@ class ChatAgent:
         user_memory = MemoryItem(
             type="Chat",
             speaker="User",
-            text=state["user_input"],
+            message=user_message,
             love=state["love"],
             ai_emo=None,
             user_emo=None
@@ -235,6 +233,42 @@ class ChatAgent:
         return {
             "messages": [user_message],
             "history": [user_memory]
+        }
+    
+    def _emotion_analysis(self, state: EmotionState) -> dict:
+        """
+        情感分析节点：根据用户输入，分析用户的情感状态
+
+        Args:
+            state: 当前EmotionState状态对象，包含user_input和messages字段
+
+        Returns:
+            dict: 状态更新，包含user_emo字段
+        """
+        # 这里可以添加情感分析逻辑，例如使用情感分析模型
+        # 例如：ai_emo = self.emotion_analyzer.analyze(state["messages"][-1].content)
+        # user_emo = self.emotion_analyzer.analyze(state["user_input"])
+
+        # 待实现
+
+        emotion_analysis_result = AIMessage(
+            content="用户情感分析结果：用户当前情感为：中性"
+        )
+
+        emotion_analysis_memory = MemoryItem(
+            type="EmotionAnalysis",
+            speaker="AI",
+            message=emotion_analysis_result,
+            love=state["love"],
+            ai_emo=None,
+            user_emo=None
+        )
+
+
+        return {
+            "history": [emotion_analysis_memory],
+            "messages": [emotion_analysis_result],
+            "user_emo": None
         }
 
     def _chat(self, state: EmotionState) -> dict:
@@ -275,7 +309,7 @@ class ChatAgent:
         ai_memory = MemoryItem(
             type="Chat",
             speaker="AI",
-            text=response.content,
+            message=response,
             love=state["love"] + 1,  # AI记忆项记录更新后的好感度
             ai_emo=None,
             user_emo=None
