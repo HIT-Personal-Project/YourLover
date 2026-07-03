@@ -79,6 +79,9 @@ class ChatAgent:
         # 当前可用工具名称列表
         self.tool_names = list(tool_map.keys())
 
+        # 将工具绑定到LLM，使其具备工具调用能力
+        self.llm_with_tools = self.llm.bind_tools(list(self.tools.values()))
+
         self.memory_loaded = False
 
         # 构建LangGraph工作流
@@ -126,7 +129,8 @@ class ChatAgent:
         2. load_memory → user_input
         3. user_input → emotion_analysis
         4. emotion_analysis → llm
-        5. llm → END
+        5. llm → should_call_tool → tools（有工具调用）或 END（无工具调用）
+        6. tools → llm（工具执行后回到LLM继续处理）
 
         使用MemorySaver作为检查点，实现会话状态持久化
         """
@@ -137,7 +141,7 @@ class ChatAgent:
         graph.add_node('load_memory', self._load_memory)   # 记忆加载节点
         graph.add_node('emotion_analysis', self._emotion_analysis)  # 情感分析节点
         graph.add_node('user_input', self._user_input)       # 用户输入处理节点
-        # graph.add_tool_node('tools', self.tools)  # 工具调用节点（暂未实现）
+        graph.add_node('tools', self._tool_call)            # 工具调用节点
         graph.add_node('llm', self._chat)                    # LLM调用节点
 
         # 条件边：根据memory_loaded状态决定首次加载还是直接处理输入
@@ -150,11 +154,21 @@ class ChatAgent:
             }
         )
 
+        # 条件边：根据LLM回复是否包含工具调用决定下一步
+        graph.add_conditional_edges(
+            "llm",
+            self._should_call_tool,  # 路由判断函数
+            {
+                "tools": "tools",    # 有tool_calls时进入工具执行节点
+                END: END             # 无tool_calls时结束对话
+            }
+        )
+
         # 状态流转边
         graph.add_edge("user_input", "emotion_analysis")  # 输入处理后进行情感分析
-        graph.add_edge("load_memory", "user_input")  # 情感分析后处理输入
-        graph.add_edge("emotion_analysis", "llm")          # 输入处理后调用LLM
-        graph.add_edge("llm", END)                   # LLM回复后结束
+        graph.add_edge("load_memory", "user_input")       # 记忆加载后处理输入
+        graph.add_edge("emotion_analysis", "llm")         # 情感分析后调用LLM
+        graph.add_edge("tools", "llm")                    # 工具执行后回到LLM
 
         # 编译工作流，启用检查点持久化
         self.workflow = graph.compile(checkpointer=MemorySaver())
@@ -179,6 +193,32 @@ class ChatAgent:
             return "user_input"
         else:
             return "load_memory"
+
+    def _should_call_tool(self, state: EmotionState) -> Literal["tools", END]:
+        """
+        条件路由函数：判断是否需要调用工具
+
+        判断逻辑:
+        - 如果最后一条消息是AIMessage且包含tool_calls → 进入 tools 节点执行工具调用
+        - 否则 → 进入 END 结束对话
+
+        Args:
+            state: 当前EmotionState状态对象
+
+        Returns:
+            Literal["tools", END]: 下一个节点名称或END
+        """
+        messages = state["messages"]
+        if not messages:
+            return END
+
+        last_message = messages[-1]
+        
+        # 检查是否有工具调用
+        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+            return "tools"
+        else:
+            return END
 
     # ---------- 工作流节点 ----------
 
@@ -273,15 +313,14 @@ class ChatAgent:
 
     def _chat(self, state: EmotionState) -> dict:
         """
-        LLM调用节点：调用大模型生成回复，并将完整对话写入history
+        LLM调用节点：调用大模型生成回复（支持工具调用）
 
         处理流程:
-        1. 构造系统提示词（包含当前好感度）
-        2. 从history中提取历史消息
-        3. 添加当前用户输入
-        4. 调用LLM生成回复
-        5. 创建User和AI的MemoryItem，写入history
-        6. 更新好感度（+1）
+        1. 获取当前messages列表
+        2. 如果是首次调用，在messages前面注入system_prompt（包含好感度）
+        3. 使用绑定了工具的LLM调用
+        4. 如果有tool_calls，只更新messages（不写history）
+        5. 如果没有tool_calls（最终回复），创建MemoryItem写入history并更新好感度
 
         Args:
             state: 当前EmotionState状态对象
@@ -289,38 +328,102 @@ class ChatAgent:
         Returns:
             dict: 状态更新，包含messages、history、love字段
         """
+        # 获取当前消息列表
+        current_messages = state["messages"] or []
+
         # 构造系统提示词，动态注入当前好感度
         system_message = SystemMessage(
             content=self.system_prompt + 
             f"\n请根据你当前模拟的好感度（爱意值）为：{state['love']}（0-100分），对用户进行回复。"
         )
 
-        # 从history中提取历史消息（用于LLM上下文）
-        history_messages = history_to_messages(state["history"])
+        # 构建LLM输入：system_message + 当前messages
+        full_messages = [system_message] + current_messages
 
-        # 添加当前用户输入到消息列表
-        current_user_message = HumanMessage(content=state["user_input"])
-        full_messages = [system_message] + history_messages + [current_user_message]
+        # 使用绑定了工具的LLM调用
+        response = self.llm_with_tools.invoke(full_messages)
 
-        # 调用LLM生成回复
-        response = self.llm.invoke(full_messages)
-
-        # 创建AI回复的记忆项
         ai_memory = MemoryItem(
             type="Chat",
             speaker="AI",
             message=response,
-            love=state["love"] + 1,  # AI记忆项记录更新后的好感度
+            love=state["love"] + 1,
             ai_emo=None,
             user_emo=None
         )
-
-        # 返回状态更新：
-        # - messages: LLM回复消息
-        # - history: 用户输入 + AI回复（完整对话回合）
-        # - love: 好感度增量（+1）
         return {
             "messages": [response],
             "history": [ai_memory],
             "love": 1
+        }
+
+    def _tool_call(self, state: EmotionState) -> dict:
+        """
+        工具调用节点：执行LLM返回的工具调用，并将结果封装为ToolMessage
+
+        处理流程:
+        1. 从messages中获取最后一条AIMessage
+        2. 提取tool_calls列表
+        3. 遍历tool_calls，使用tool_map执行每个工具
+        4. 为每个工具调用创建ToolMessage
+        5. 返回EmotionState格式的状态更新
+
+        Args:
+            state: 当前EmotionState状态对象
+
+        Returns:
+            dict: 状态更新，包含messages字段（ToolMessage列表）
+        """
+        # 获取最后一条消息（应该是包含tool_calls的AIMessage）
+        messages = state["messages"]
+        if not messages:
+            return {"messages": [], "history": [], "love": 0}
+
+        last_message = messages[-1]
+        
+        # 检查是否有工具调用
+        if not hasattr(last_message, 'tool_calls') or not last_message.tool_calls:
+            return {"messages": [], "history": [], "love": 0}
+
+        # 执行所有工具调用并创建ToolMessage
+        tool_messages = []
+
+        tool_call_memories = []
+        
+        for tool_call in last_message.tool_calls:
+            tool_name = tool_call.get('name')
+            tool_args = tool_call.get('args', {})
+            tool_call_id = tool_call.get('id', '')
+
+            # 检查工具是否存在
+            if tool_name not in self.tools:
+                result = f"工具 '{tool_name}' 不存在"
+            else:
+                # 执行工具调用
+                try:
+                    result = self.tools[tool_name].invoke(tool_args)
+                except Exception as e:
+                    result = f"工具执行失败: {str(e)}"
+
+            # 创建ToolMessage
+            tool_message = ToolMessage(
+                content=str(result),
+                tool_call_id=tool_call_id,
+            )
+            tool_messages.append(tool_message)
+
+            tool_call_memory = MemoryItem(
+                type="ToolCall",
+                speaker="AI",
+                message=tool_message,
+                love=state["love"],
+                ai_emo=None,
+                user_emo=None
+            )
+            tool_call_memories.append(tool_call_memory)
+
+        return {
+            "messages": tool_messages,
+            "history": tool_call_memories,
+            "love": 0
         }

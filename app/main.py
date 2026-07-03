@@ -28,11 +28,18 @@ if __name__ == "__main__":
     print("🎭 情感陪伴Agent已启动")
     print("------------------------")
 
+    # test_conversations = [
+    #     "今天工作好累啊，感觉压力很大",
+    #     "谢谢你的安慰，心情好多了",
+    #     "你真好，我越来越喜欢你了"
+    # ]
+
     test_conversations = [
-        "今天工作好累啊，感觉压力很大",
-        "谢谢你的安慰，心情好多了",
-        "你真好，我越来越喜欢你了"
+        "你好啊！",
+        "请调用数学计算工具，帮我计算'3**2+5'的结果",
+        "谢谢你！"
     ]
+
 
     for user_input in test_conversations:
         print(f"\n👤 用户: {user_input}")
@@ -45,15 +52,14 @@ if __name__ == "__main__":
         last_memory = state["history"][-1]
         print(f"🤖 AI: {last_memory.message.content}")
         print(f"💖 当前好感度: {state['love']}")
-        print(f"📝 记忆总数: {len(state['history'])}")
+        print(f"📝 记忆总数: {len(state['messages'])}")
 
     print("------------------------")
     print("🎭 情感陪伴Agent已关闭")
 
 
-    print(history_to_messages(state["history"]))
 
-    print("------------------------")
-
-    print(state["messages"])
+    for message in state["history"]:
+        print(message.message)
+        print("------------------------")
     
