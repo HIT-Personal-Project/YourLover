@@ -48,7 +48,7 @@ class MemoryItem:
         if self.type == "Chat":
             #一般情况    
             return f"{self.speaker}: {self.message.content}"
-            
+
         elif self.type == "Think":
             #思考类型
             return f"[思考] {self.message.content}"
