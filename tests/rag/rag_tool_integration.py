@@ -6,11 +6,11 @@ version: 1.0.0
 Author: HongJin
 email: 756547077@qq.com
 """
-import os
 import sys
+from pathlib import Path
 
 # 把 app 目录加入 sys.path，保证可从任意位置运行（python test/RAGTest.py 或 python RAGTest.py）
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "app"))
 
 from config import settings
 from tools.RAGTool import RAGTool
