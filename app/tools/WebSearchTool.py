@@ -7,7 +7,7 @@ Date: 2026-06-25 14:30:47
 LastEditors: HongJin
 LastEditTime: 2026-06-25 14:30:47
 '''
-from tools.BaseTool import BaseTool
+from .BaseTool import BaseTool
 
 
 class WebSearchTool(BaseTool):

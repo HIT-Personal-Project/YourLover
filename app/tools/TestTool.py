@@ -5,7 +5,7 @@ Author: HongJin
 Date: 2026-06-25
 '''
 import json
-from tools.BaseTool import BaseTool, discover_and_wrap_tools
+from .BaseTool import BaseTool, discover_and_wrap_tools
 
 ## 测试工具
 class CalculatorTool(BaseTool):
@@ -107,7 +107,7 @@ if __name__ == "__main__":
     # 方式1: 直接调用 discover_and_wrap_tools() 获取 tool_map
     #   注意: 直接运行脚本时 __name__ 为 __main__，无法自动推断包名，需显式传入
     # ========================================================================
-    from tools import tool_map
+    from app.tools import tool_map
 
     # ========================================================================
     # 方式2: 从 tools 包的 __init__.py 导入（推荐，包加载时已自动扫描）

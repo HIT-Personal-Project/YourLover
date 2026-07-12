@@ -1,429 +1,326 @@
-'''
-Descripttion: 情感陪伴Agent核心类，基于LangGraph构建工作流
-version: 1.0
-Author: HongJin
-email: 756547077@qq.com
-Date: 2026-06-25
-LastEditors: HongJin
-LastEditTime: 2026-07-02
+"""LangGraph chat agent with the M7 long-term-memory integration."""
 
-工作流说明:
-┌─────────────────────────────────────────────────────────────────────┐
-│                        ChatAgent 状态流转图                         │
-├─────────────────────────────────────────────────────────────────────┤
-│                  │
-│                                                                     │
-├─────────────────────────────────────────────────────────────────────┤
-│  节点职责:                                                          │
-│    load_memory: 首次会话时初始化记忆（好感度、历史记录等）           │
-│    user_input: 处理用户输入，转换为消息格式                         │
-│    llm: 调用大模型生成回复，将完整对话写入history                    │
-├─────────────────────────────────────────────────────────────────────┤
-│  状态字段:                                                          │
-│    messages:   LangChain消息列表，用于LLM调用                       │
-│    history:    MemoryItem列表，带元数据的完整记忆                   │
-│    love:       好感度(0-100)，每次对话+1                           │
-│    user_input: 当前用户输入                                         │
-│    memory_loaded: 是否已加载记忆（路由判断用）                      │
-└─────────────────────────────────────────────────────────────────────┘
-'''
+from __future__ import annotations
 
-from tools import tool_map
-from config import Settings, settings
+from collections.abc import Iterable
+from typing import Any, Literal
 
-# from models.OllamaModels import get_ollama_llm, get_ollama_embeddings
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
-from langchain_core.prompts import ChatPromptTemplate
-
-from langgraph.graph import StateGraph, END, START, MessagesState
-from langgraph.prebuilt import ToolNode
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
 
-from memory.EmotionMemory import EmotionState, history_to_messages
-from memory.MemoryItem import MemoryItem
-
-from typing import Literal
+from app.affinity.service import AffinityService
+from app.config import Settings
+from app.memory.classifier import MemoryClassifier
+from app.memory.EmotionMemory import EmotionState
+from app.memory.MemoryItem import MemoryItem
+from app.memory.retriever import MemoryRetriever
+from app.memory.schema import MemoryType, SemanticMemory
+from app.memory.store import FileMemoryStore
+from app.memory.window import select_messages_for_memory_write, trim_messages
+from app.tools import tool_map
 
 
 class ChatAgent:
-    """
-    情感陪伴Agent核心类，负责处理用户对话、管理记忆和调用大模型
+    """Emotional companion agent composed from the memory-module boundaries."""
 
-    核心能力:
-    - 基于LangGraph的状态机工作流
-    - 支持记忆持久化（通过MemorySaver）
-    - 好感度系统（love值管理）
-    - 完整的对话历史记录
-    """
+    def __init__(
+        self,
+        llm: Any,
+        config: Settings,
+        session: dict[str, Any],
+        *,
+        memory_store: FileMemoryStore | None = None,
+        memory_retriever: MemoryRetriever | None = None,
+        memory_classifier: MemoryClassifier | None = None,
+        affinity_service: AffinityService | None = None,
+        max_messages: int = 20,
+        keep_recent_turns: int = 6,
+    ) -> None:
+        if max_messages < 1:
+            raise ValueError("max_messages must be greater than or equal to 1")
+        if keep_recent_turns < 0:
+            raise ValueError("keep_recent_turns must be greater than or equal to 0")
 
-    def __init__(self, llm, config: Settings, session):
-        """
-        初始化 ChatAgent 实例
-
-        Args:
-            llm: 语言模型实例，需支持invoke方法
-            config: 配置文件实例，包含系统提示词等配置
-            session: 会话配置，格式: {"configurable": {"thread_id": "xxx"}}
-
-        Returns:
-            None
-        """
         self.config = config
         self.session = session
         self.llm = llm
         self.tools = tool_map
-
-        # 系统提示词，从配置中读取
         self.system_prompt = config.TEST_SYSTEM_PROMPT
-
-        # 当前可用工具名称列表
-        self.tool_names = list(tool_map.keys())
-
-        # 将工具绑定到LLM，使其具备工具调用能力
-        self.llm_with_tools = self.llm.bind_tools(list(self.tools.values()))
-
-        self.memory_loaded = False
-
-        # 构建LangGraph工作流
+        self.memory_store = memory_store or FileMemoryStore()
+        self.memory_retriever = memory_retriever or MemoryRetriever(self.memory_store)
+        self.memory_classifier = memory_classifier or MemoryClassifier()
+        self.affinity_service = affinity_service or AffinityService()
+        self.max_messages = max_messages
+        self.keep_recent_turns = keep_recent_turns
+        self.llm_with_tools = (
+            self.llm.bind_tools(list(self.tools.values()))
+            if hasattr(self.llm, "bind_tools")
+            else self.llm
+        )
         self.__build_workflow()
 
-    def invoke(self, user_input: dict, session: dict = None) -> dict:
+    def invoke(
+        self, user_input: dict[str, Any], session: dict[str, Any] | None = None
+    ) -> EmotionState:
+        """Run one turn.
+
+        ``user_id`` identifies durable memory ownership; ``session_id`` (or the
+        LangGraph ``thread_id``) identifies short-term conversation state.
         """
-        执行 ChatAgent 的工作流，处理用户输入并返回回复
 
-        Args:
-            user_input: 用户输入字典，格式: {"user_input": "用户消息内容"}
-            session: 会话配置（可选），默认使用初始化时的session
-
-        Returns:
-            EmotionState: 执行后的完整状态对象，包含messages、history、love等字段
-        """
-        # 默认使用初始化时的会话配置
-        if session is None:
-            session = self.session
-
-        return self.workflow.invoke(user_input, config=session)
+        runtime_session = session or self.session
+        configurable = dict(runtime_session.get("configurable") or {})
+        payload = dict(user_input)
+        session_id = str(
+            payload.get("session_id") or configurable.get("thread_id") or "default-session"
+        )
+        user_id = str(
+            payload.get("user_id") or configurable.get("user_id") or "default-user"
+        )
+        configurable["thread_id"] = session_id
+        runtime_session = {**runtime_session, "configurable": configurable}
+        payload.update(user_id=user_id, session_id=session_id)
+        return self.workflow.invoke(payload, config=runtime_session)
 
     def save_graph_figure(self, filename: str) -> None:
-        """
-        保存 ChatAgent 的工作流图（Mermaid格式转PNG）
-
-        Args:
-            filename: 输出图片文件名，如 "ChatAgent.png"
-
-        Returns:
-            None
-        """
         graph_png = self.workflow.get_graph().draw_mermaid_png()
-        with open(filename, "wb") as f:
-            f.write(graph_png)
-
-    # ---------- 工作流构建 ----------
+        with open(filename, "wb") as file:
+            file.write(graph_png)
 
     def __build_workflow(self) -> None:
-        """
-        构建LangGraph状态机工作流
-
-        工作流结构:
-        1. START → 条件路由 → load_memory（首次）或 user_input（非首次）
-        2. load_memory → user_input
-        3. user_input → emotion_analysis
-        4. emotion_analysis → llm
-        5. llm → should_call_tool → tools（有工具调用）或 END（无工具调用）
-        6. tools → llm（工具执行后回到LLM继续处理）
-
-        使用MemorySaver作为检查点，实现会话状态持久化
-        """
-        # 创建状态图，使用EmotionState作为状态定义
         graph = StateGraph(EmotionState)
+        graph.add_node("load_runtime_context", self._load_runtime_context)
+        graph.add_node("retrieve_long_term_memory", self._retrieve_long_term_memory)
+        graph.add_node("user_input", self._user_input)
+        graph.add_node("emotion_analysis", self._emotion_analysis)
+        graph.add_node("llm", self._chat)
+        graph.add_node("tools", self._tool_call)
+        graph.add_node("write_memory_candidates", self._write_memory_candidates)
+        graph.add_node("emit_affinity_event", self._emit_affinity_event)
+        graph.add_node("trim_short_term_window", self._trim_short_term_window)
 
-        # 添加工作流节点
-        graph.add_node('load_memory', self._load_memory)   # 记忆加载节点
-        graph.add_node('emotion_analysis', self._emotion_analysis)  # 情感分析节点
-        graph.add_node('user_input', self._user_input)       # 用户输入处理节点
-        graph.add_node('tools', self._tool_call)            # 工具调用节点
-        graph.add_node('llm', self._chat)                    # LLM调用节点
-
-        # 条件边：根据memory_loaded状态决定首次加载还是直接处理输入
+        graph.add_edge(START, "load_runtime_context")
+        graph.add_edge("load_runtime_context", "retrieve_long_term_memory")
+        graph.add_edge("retrieve_long_term_memory", "user_input")
+        graph.add_edge("user_input", "emotion_analysis")
+        graph.add_edge("emotion_analysis", "llm")
         graph.add_conditional_edges(
-            START,
-            self._should_load_memory,  # 路由判断函数
-            {
-                "load_memory": "load_memory",  # memory_loaded=False时进入
-                "user_input": "user_input"     # memory_loaded=True时进入
-            }
+            "llm", self._should_call_tool, {"tools": "tools", "write": "write_memory_candidates"}
         )
-
-        # 条件边：根据LLM回复是否包含工具调用决定下一步
-        graph.add_conditional_edges(
-            "llm",
-            self._should_call_tool,  # 路由判断函数
-            {
-                "tools": "tools",    # 有tool_calls时进入工具执行节点
-                END: END             # 无tool_calls时结束对话
-            }
-        )
-
-        # 状态流转边
-        graph.add_edge("user_input", "emotion_analysis")  # 输入处理后进行情感分析
-        graph.add_edge("load_memory", "user_input")       # 记忆加载后处理输入
-        graph.add_edge("emotion_analysis", "llm")         # 情感分析后调用LLM
-        graph.add_edge("tools", "llm")                    # 工具执行后回到LLM
-
-        # 编译工作流，启用检查点持久化
+        graph.add_edge("tools", "llm")
+        graph.add_edge("write_memory_candidates", "emit_affinity_event")
+        graph.add_edge("emit_affinity_event", "trim_short_term_window")
+        graph.add_edge("trim_short_term_window", END)
         self.workflow = graph.compile(checkpointer=MemorySaver())
 
-    # ---------- 路由函数 ----------
-
-    def _should_load_memory(self, state: EmotionState) -> Literal["load_memory", "user_input"]:
-        """
-        条件路由函数：决定首次会话还是后续会话
-
-        判断逻辑:
-        - 如果 memory_loaded 为 False 或不存在 → 进入 load_memory
-        - 如果 memory_loaded 为 True → 进入 user_input（跳过加载）
-
-        Args:
-            state: 当前EmotionState状态对象
-
-        Returns:
-            Literal["load_memory", "user_input"]: 下一个节点名称
-        """
-        if self.memory_loaded is True:
-            return "user_input"
-        else:
-            return "load_memory"
-
-    def _should_call_tool(self, state: EmotionState) -> Literal["tools", END]:
-        """
-        条件路由函数：判断是否需要调用工具
-
-        判断逻辑:
-        - 如果最后一条消息是AIMessage且包含tool_calls → 进入 tools 节点执行工具调用
-        - 否则 → 进入 END 结束对话
-
-        Args:
-            state: 当前EmotionState状态对象
-
-        Returns:
-            Literal["tools", END]: 下一个节点名称或END
-        """
-        messages = state["messages"]
-        if not messages:
-            return END
-
-        last_message = messages[-1]
-        
-        # 检查是否有工具调用
-        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+    def _should_call_tool(self, state: EmotionState) -> Literal["tools", "write"]:
+        messages = state.get("messages") or []
+        if messages and getattr(messages[-1], "tool_calls", None):
             return "tools"
-        else:
-            return END
+        return "write"
 
-    # ---------- 工作流节点 ----------
-
-    def _load_memory(self, state: EmotionState) -> dict:
-        """
-        记忆加载节点：初始化会话状态（首次会话时调用）
-
-        目前为模拟实现，后续将接入长期记忆存储（如数据库）
-        默认初始化好感度为77，记忆列表为空
-
-        Args:
-            state: 当前EmotionState状态对象
-
-        Returns:
-            dict: 初始化后的状态更新，包含love、history、memory_loaded字段
-        """
-
-        self.memory_loaded = True
-        
+    def _load_runtime_context(self, state: EmotionState) -> dict[str, Any]:
+        user_id = state["user_id"]
         return {
-            "love": 77,                # 初始好感度设置为77
-            "history": [],             # 初始记忆列表为空
-            "messages": []            # 初始消息列表为空
+            "love_snapshot": self.affinity_service.get_love_snapshot(user_id),
+            "memory_context": "",
+            "memory_write_ids": [],
         }
 
-    def _user_input(self, state: EmotionState) -> dict:
-        """
-        用户输入处理节点：将用户输入转换为LangChain消息格式
+    def _retrieve_long_term_memory(self, state: EmotionState) -> dict[str, str]:
+        user_id = state["user_id"]
+        query = state.get("user_input", "")
+        recalled = self.memory_retriever.retrieve_memories(user_id, query, top_k=5)
 
-        注意：此节点仅做输入预处理，不写入history。
-        完整的对话记忆会在llm节点中与AI回复一起写入。
-
-        Args:
-            state: 当前EmotionState状态对象，包含user_input字段
-
-        Returns:
-            dict: 状态更新，仅包含messages字段
-        """
-        # 将用户输入转换为LangChain HumanMessage格式
-        user_message = HumanMessage(content=state["user_input"])
-
-                # 创建用户输入的记忆项
-        user_memory = MemoryItem(
-            type="Chat",
-            speaker="User",
-            message=user_message,
-            love=state["love"],
-            ai_emo=None,
-            user_emo=None
+        # Stable user preferences should shape even an unrelated ordinary turn.
+        preferences = self.memory_retriever.retrieve_memories(
+            user_id, "", memory_type=MemoryType.SEMANTIC, top_k=20
         )
+        recalled = _unique_memories(
+            [
+                *[
+                    item
+                    for item in preferences
+                    if isinstance(item, SemanticMemory) and item.scope == "preference"
+                ],
+                *recalled,
+            ]
+        )[:5]
+        return {"memory_context": self.memory_retriever.format_memory_context(recalled)}
 
+    def _user_input(self, state: EmotionState) -> dict[str, Any]:
+        user_message = HumanMessage(
+            content=state["user_input"],
+            additional_kwargs={"session_id": state["session_id"]},
+        )
         return {
             "messages": [user_message],
-            "history": [user_memory]
-        }
-    
-    def _emotion_analysis(self, state: EmotionState) -> dict:
-        """
-        情感分析节点：根据用户输入，分析用户的情感状态
-
-        Args:
-            state: 当前EmotionState状态对象，包含user_input和messages字段
-
-        Returns:
-            dict: 状态更新，包含user_emo字段
-        """
-        # 这里可以添加情感分析逻辑，例如使用情感分析模型
-        # 例如：ai_emo = self.emotion_analyzer.analyze(state["messages"][-1].content)
-        # user_emo = self.emotion_analyzer.analyze(state["user_input"])
-
-        # 待实现
-
-        emotion_analysis_result = AIMessage(
-            content="用户情感分析结果：用户当前情感为：中性"
-        )
-
-        emotion_analysis_memory = MemoryItem(
-            type="EmotionAnalysis",
-            speaker="AI",
-            message=emotion_analysis_result,
-            love=state["love"],
-            ai_emo=None,
-            user_emo=None
-        )
-
-
-        return {
-            "history": [emotion_analysis_memory],
-            "messages": [emotion_analysis_result],
-            "user_emo": None
+            "history": [
+                MemoryItem(
+                    type="Chat",
+                    speaker="User",
+                    message=user_message,
+                    love=state["love_snapshot"],
+                    ai_emo=None,
+                    user_emo=None,
+                )
+            ],
         }
 
-    def _chat(self, state: EmotionState) -> dict:
-        """
-        LLM调用节点：调用大模型生成回复（支持工具调用）
+    def _emotion_analysis(self, state: EmotionState) -> dict[str, Any]:
+        # M7 keeps the existing node boundary; a real analyzer can replace this stub.
+        return {"user_emo": None}
 
-        处理流程:
-        1. 获取当前messages列表
-        2. 如果是首次调用，在messages前面注入system_prompt（包含好感度）
-        3. 使用绑定了工具的LLM调用
-        4. 如果有tool_calls，只更新messages（不写history）
-        5. 如果没有tool_calls（最终回复），创建MemoryItem写入history并更新好感度
+    def _chat(self, state: EmotionState) -> dict[str, Any]:
+        system_message = SystemMessage(content=self._assemble_system_prompt(state))
+        response = self.llm_with_tools.invoke([system_message, *(state.get("messages") or [])])
+        result: dict[str, Any] = {"messages": [response]}
+        if not getattr(response, "tool_calls", None):
+            result["history"] = [
+                MemoryItem(
+                    type="Chat",
+                    speaker="AI",
+                    message=response,
+                    love=state["love_snapshot"],
+                    ai_emo=None,
+                    user_emo=state.get("user_emo"),
+                )
+            ]
+        return result
 
-        Args:
-            state: 当前EmotionState状态对象
-
-        Returns:
-            dict: 状态更新，包含messages、history、love字段
-        """
-        # 获取当前消息列表
-        current_messages = state["messages"] or []
-
-        # 构造系统提示词，动态注入当前好感度
-        system_message = SystemMessage(
-            content=self.system_prompt + 
-            f"\n请根据你当前模拟的好感度（爱意值）为：{state['love']}（0-100分），对用户进行回复。"
+    def _assemble_system_prompt(self, state: EmotionState) -> str:
+        memory_context = state.get("memory_context") or "（暂无可用长期记忆）"
+        session_summary = state.get("session_summary") or "（暂无短期会话摘要）"
+        return (
+            f"{self.system_prompt}\n\n"
+            f"当前好感度快照：{state['love_snapshot']}（0-100）。\n"
+            "以下长期记忆仅用于辅助回复，不要把它当作用户本轮新说的话：\n"
+            f"{memory_context}\n\n"
+            "已裁剪的本次会话摘要：\n"
+            f"{session_summary}"
         )
 
-        # 构建LLM输入：system_message + 当前messages
-        full_messages = [system_message] + current_messages
+    def _tool_call(self, state: EmotionState) -> dict[str, Any]:
+        messages = state.get("messages") or []
+        if not messages or not getattr(messages[-1], "tool_calls", None):
+            return {"messages": []}
 
-        # 使用绑定了工具的LLM调用
-        response = self.llm_with_tools.invoke(full_messages)
-
-        ai_memory = MemoryItem(
-            type="Chat",
-            speaker="AI",
-            message=response,
-            love=state["love"] + 1,
-            ai_emo=None,
-            user_emo=None
-        )
-        return {
-            "messages": [response],
-            "history": [ai_memory],
-            "love": 1
-        }
-
-    def _tool_call(self, state: EmotionState) -> dict:
-        """
-        工具调用节点：执行LLM返回的工具调用，并将结果封装为ToolMessage
-
-        处理流程:
-        1. 从messages中获取最后一条AIMessage
-        2. 提取tool_calls列表
-        3. 遍历tool_calls，使用tool_map执行每个工具
-        4. 为每个工具调用创建ToolMessage
-        5. 返回EmotionState格式的状态更新
-
-        Args:
-            state: 当前EmotionState状态对象
-
-        Returns:
-            dict: 状态更新，包含messages字段（ToolMessage列表）
-        """
-        # 获取最后一条消息（应该是包含tool_calls的AIMessage）
-        messages = state["messages"]
-        if not messages:
-            return {"messages": [], "history": [], "love": 0}
-
-        last_message = messages[-1]
-        
-        # 检查是否有工具调用
-        if not hasattr(last_message, 'tool_calls') or not last_message.tool_calls:
-            return {"messages": [], "history": [], "love": 0}
-
-        # 执行所有工具调用并创建ToolMessage
-        tool_messages = []
-
-        tool_call_memories = []
-        
-        for tool_call in last_message.tool_calls:
-            tool_name = tool_call.get('name')
-            tool_args = tool_call.get('args', {})
-            tool_call_id = tool_call.get('id', '')
-
-            # 检查工具是否存在
+        tool_messages: list[ToolMessage] = []
+        history: list[MemoryItem] = []
+        for tool_call in messages[-1].tool_calls:
+            tool_name = tool_call.get("name")
+            tool_args = tool_call.get("args", {})
             if tool_name not in self.tools:
                 result = f"工具 '{tool_name}' 不存在"
             else:
-                # 执行工具调用
                 try:
                     result = self.tools[tool_name].invoke(tool_args)
-                except Exception as e:
-                    result = f"工具执行失败: {str(e)}"
-
-            # 创建ToolMessage
+                except Exception as exc:  # Tool failures are returned to the LLM.
+                    result = f"工具执行失败: {exc}"
             tool_message = ToolMessage(
-                content=str(result),
-                tool_call_id=tool_call_id,
+                content=str(result), tool_call_id=tool_call.get("id", "")
             )
             tool_messages.append(tool_message)
-
-            tool_call_memory = MemoryItem(
-                type="ToolCall",
-                speaker="AI",
-                message=tool_message,
-                love=state["love"],
-                ai_emo=None,
-                user_emo=None
+            history.append(
+                MemoryItem(
+                    type="ToolCall",
+                    speaker="AI",
+                    message=tool_message,
+                    love=state["love_snapshot"],
+                    ai_emo=None,
+                    user_emo=state.get("user_emo"),
+                )
             )
-            tool_call_memories.append(tool_call_memory)
+        return {"messages": tool_messages, "history": history}
 
-        return {
-            "messages": tool_messages,
-            "history": tool_call_memories,
-            "love": 0
-        }
+    def _write_memory_candidates(self, state: EmotionState) -> dict[str, list[str]]:
+        messages = state.get("messages") or []
+        _, removed = trim_messages(messages, self.max_messages, self.keep_recent_turns)
+        candidates: list[BaseMessage] = select_messages_for_memory_write(removed)
+
+        # Explicit statements such as "记住..." must be durable immediately,
+        # even before the short-term window is large enough to trim.
+        current_user = next(
+            (
+                item
+                for item in reversed(messages)
+                if isinstance(item, HumanMessage) and item.content == state.get("user_input")
+            ),
+            None,
+        )
+        if current_user is not None and current_user not in candidates:
+            candidates.append(current_user)
+
+        memory_ids: list[str] = []
+        user_id = state["user_id"]
+        for memory in self.memory_classifier.extract_semantic_memories(candidates, user_id):
+            if not self._semantic_exists(user_id, memory):
+                memory_ids.append(self.memory_store.add_memory(user_id, memory))
+        for memory in self.memory_classifier.extract_procedural_candidates(candidates, user_id):
+            memory_ids.append(self.memory_store.add_memory(user_id, memory))
+        episode = self.memory_classifier.summarize_episodic_memory(
+            candidates, user_id, love_snapshot=state["love_snapshot"]
+        )
+        if episode is not None:
+            memory_ids.append(self.memory_store.add_memory(user_id, episode))
+        return {"memory_write_ids": memory_ids}
+
+    def _semantic_exists(self, user_id: str, candidate: SemanticMemory) -> bool:
+        return any(
+            isinstance(item, SemanticMemory)
+            and item.scope == candidate.scope
+            and item.content == candidate.content
+            for item in self.memory_store.list_memories(user_id, MemoryType.SEMANTIC)
+        )
+
+    def _emit_affinity_event(self, state: EmotionState) -> dict[str, Any]:
+        self.affinity_service.emit_affinity_event(
+            state["user_id"],
+            {
+                "type": "memory_write_completed",
+                "session_id": state["session_id"],
+                "memory_ids": list(state.get("memory_write_ids") or []),
+            },
+        )
+        return {}
+
+    def _trim_short_term_window(self, state: EmotionState) -> dict[str, Any]:
+        _, removed = trim_messages(
+            state.get("messages") or [], self.max_messages, self.keep_recent_turns
+        )
+        removals = [
+            RemoveMessage(id=message.id)
+            for message in removed
+            if getattr(message, "id", None)
+        ]
+        new_summary = "；".join(
+            str(getattr(message, "content", ""))[:80]
+            for message in select_messages_for_memory_write(removed)
+            if getattr(message, "content", "")
+        )
+        result: dict[str, Any] = {"messages": removals}
+        if new_summary:
+            previous_summary = state.get("session_summary") or ""
+            result["session_summary"] = "；".join(
+                part for part in (previous_summary, new_summary) if part
+            )[-1000:]
+        return result
+
+
+def _unique_memories(memories: Iterable[Any]) -> list[Any]:
+    unique: list[Any] = []
+    seen: set[str] = set()
+    for memory in memories:
+        memory_id = str(getattr(memory, "id", id(memory)))
+        if memory_id not in seen:
+            unique.append(memory)
+            seen.add(memory_id)
+    return unique
