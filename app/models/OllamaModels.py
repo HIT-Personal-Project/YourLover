@@ -8,8 +8,8 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 
 def get_ollama_llm(model_name: str) -> ChatOllama:
-    return ChatOllama(model_name=model_name)
+    return ChatOllama(model=model_name)
 
 
 def get_ollama_embeddings(embedding_model_name: str) -> OllamaEmbeddings:
-    return OllamaEmbeddings(model_name=embedding_model_name)
+    return OllamaEmbeddings(model=embedding_model_name)

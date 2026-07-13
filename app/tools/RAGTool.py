@@ -9,8 +9,8 @@ import os
 import hashlib
 
 from .BaseTool import BaseTool, discover_and_wrap_tools
-from app.config import settings, Settings
-from app.models.OllamaModels import OllamaEmbeddings
+from config import settings, Settings
+from models.OllamaModels import OllamaEmbeddings
 
 import jieba
 from rank_bm25 import BM25Okapi
