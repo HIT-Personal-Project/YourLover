@@ -2,14 +2,14 @@ import json
 
 import pytest
 
-from app.memory.schema import (
+from agent.memory.schema import (
     EpisodicMemory,
     MemoryEvidence,
     MemoryStatus,
     MemoryType,
     SemanticMemory,
 )
-from app.memory.store import FileMemoryStore, MemoryStoreError
+from agent.memory.store import FileMemoryStore, MemoryStoreError
 
 
 def test_load_user_memory_creates_empty_file(tmp_path):
