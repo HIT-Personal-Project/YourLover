@@ -8,7 +8,7 @@
 from langchain_ollama import ChatOllama
 
 from agent.agent.ChatAgent import ChatAgent
-from agent.config import settings
+from core.config import settings
 
 from agent.models.OllamaModels import get_ollama_llm
 

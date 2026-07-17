@@ -9,7 +9,7 @@ import os
 import hashlib
 
 from agent.tools.BaseTool import BaseTool, discover_and_wrap_tools
-from agent.config import settings, Settings
+from core.config import settings, Settings
 from agent.models.OllamaModels import OllamaEmbeddings
 
 import jieba

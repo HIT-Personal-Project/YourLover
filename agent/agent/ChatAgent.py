@@ -26,7 +26,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from agent.affinity.service import AffinityService
-from agent.config import Settings
+from core.config import Settings
 from agent.memory.classifier import MemoryClassifier
 from agent.memory.EmotionMemory import EmotionState
 from agent.memory.MemoryItem import MemoryItem

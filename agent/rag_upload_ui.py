@@ -6,7 +6,7 @@ email: 756547077@qq.com
 """
 import streamlit as st
 
-from agent.config import settings
+from core.config import settings
 from agent.tools.RAGTool import RAG
 
 
