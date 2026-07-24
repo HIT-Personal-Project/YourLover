@@ -24,6 +24,7 @@ class MenuItemType(Enum):
 
     HOME = auto()       # 打开主页
     SETTINGS = auto()   # 打开设置
+    HIDE = auto()       # 隐藏宠物
     QUIT = auto()       # 退出应用
     SEPARATOR = auto()  # 分隔线
     CUSTOM = auto()     # 自定义业务菜单项

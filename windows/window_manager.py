@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from core.agent_event import AgentEvent
 from core.event_bus import event_bus
-from windows.avatar_controller_protocol import AvatarControllerProtocol
+from avatar.avatar_controller_protocol import AvatarControllerProtocol
 from windows.chat_window import ChatWindow
 from windows.lover_window import LoverWindow
 from windows.setting_window import SettingWindow
@@ -81,6 +81,10 @@ class WindowManager:
         event_bus.avatar_hit_area_clicked.connect(self._on_avatar_hit_area)
         event_bus.avatar_shaken.connect(self._on_avatar_shaken)
         event_bus.avatar_state_changed.connect(self._on_avatar_state_changed)
+        # 拖拽动画：开始时播放被抓住动画，结束时播放放下动画，过程中传方向
+        event_bus.avatar_drag_started.connect(self._on_avatar_drag_started)
+        event_bus.avatar_drag_direction.connect(self._on_avatar_drag_direction)
+        event_bus.avatar_drag_finished.connect(self._on_avatar_drag_finished)
 
         # 示例：收到 Agent 回复后更新聊天窗口（后续由 AgentClient 发送事件）
         event_bus.agent_reply_received.connect(self._on_agent_reply)
@@ -169,6 +173,34 @@ class WindowManager:
         """将摇晃手势转发给 AvatarController。"""
         if self._avatar_controller is not None:
             self._avatar_controller.on_shake()
+
+    def _on_avatar_drag_started(self, direction: str) -> None:
+        """将拖拽开始事件转发给 AvatarController（播放被抓住的动画）。
+
+        Args:
+            direction: 拖拽初始方向 "left"/"right"/"up"/"down"。
+        """
+        if self._avatar_controller is not None:
+            self._avatar_controller.on_drag_start(direction)
+
+    def _on_avatar_drag_direction(self, direction: str) -> None:
+        """将拖拽方向转发给 AvatarController（角色可朝拖拽方向倾斜）。
+
+        Args:
+            direction: 方向字符串 "left"/"right"/"up"/"down"。
+        """
+        if self._avatar_controller is not None:
+            self._avatar_controller.on_drag_direction(direction)
+
+    def _on_avatar_drag_finished(self, x: int, y: int) -> None:
+        """将拖拽结束事件转发给 AvatarController（播放放下的动画）。
+
+        Args:
+            x: 拖拽结束时的全局 x 坐标。
+            y: 拖拽结束时的全局 y 坐标。
+        """
+        if self._avatar_controller is not None:
+            self._avatar_controller.on_drag_end()
 
     def _on_avatar_state_changed(self, state_name: str) -> None:
         """将 Avatar 状态变化转发给 AvatarController。

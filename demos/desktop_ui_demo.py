@@ -40,6 +40,9 @@ try:
 except ImportError:
     LIVE2D_AVAILABLE = False
 
+from core.config import settings
+
+
 
 # ============================================================
 # 占位 Avatar（无 live2d-py 或加载失败时使用）
@@ -86,6 +89,22 @@ class FakeAvatarController:
     def on_shake(self) -> None:
         print("[FakeAvatarController] 摇晃")
 
+    def on_drag_start(self, direction: str) -> None:
+        """拖拽开始：播放被抓住的动画（占位打印）。
+
+        Args:
+            direction: 拖拽初始方向 "left"/"right"/"up"/"down"。
+        """
+        print(f"[FakeAvatarController] 拖拽开始(方向:{direction}) → 惊讶表情")
+
+    def on_drag_direction(self, direction: str) -> None:
+        """拖拽方向变化（占位打印）。"""
+        print(f"[FakeAvatarController] 拖拽方向: {direction}")
+
+    def on_drag_end(self) -> None:
+        """拖拽结束：播放放下的动画（占位打印）。"""
+        print("[FakeAvatarController] 拖拽结束 → 恢复 happy")
+
     def play_motion(self, motion_name: str) -> None:
         pass
 
@@ -122,7 +141,7 @@ class Live2DAvatarWidget(QOpenGLWidget):
         self.model = None  # LAppModel，initializeGL 中创建
         self._timer: QTimer | None = None          # 每帧渲染定时器
         self._idle_timer: QTimer | None = None     # Idle 动作检测定时器（低频）
-        self._idle_check_interval_ms: int = 3000    # Idle 检测间隔（毫秒）
+        self._idle_check_interval_ms: int = 10000    # Idle 检测间隔（毫秒）
         self._init_ok: bool = False
 
         # 配置 OpenGL 表面格式（带 alpha 通道，用于透明背景）
@@ -136,7 +155,7 @@ class Live2DAvatarWidget(QOpenGLWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAutoFillBackground(False)
 
-        self.setFixedSize(300, 680)
+        self.setFixedSize(*settings.CHARACTER_WINDOW_SIZE)
 
     def initializeGL(self) -> None:
         """OpenGL 上下文创建完成后由 Qt 自动调用。
@@ -151,7 +170,7 @@ class Live2DAvatarWidget(QOpenGLWidget):
 
             self.model = live2d.LAppModel()
             self.model.LoadModelJson(self._model_path)
-            self.model.Resize(self.width(), self.height())
+            self.model.Resize(*settings.CHARACTER_WINDOW_SIZE)
             self.model.SetAutoBreathEnable(True)
             self.model.SetAutoBlinkEnable(True)
 
@@ -203,15 +222,12 @@ class Live2DAvatarWidget(QOpenGLWidget):
         """
         if not self.model:
             return
-
         # 1. 鼠标跟随：把全局鼠标坐标转换为控件本地坐标
         cursor_pos = QCursor.pos()
         local_pos = self.mapFromGlobal(cursor_pos)
         self.model.Drag(local_pos.x(), local_pos.y())
-
         # 2. 模型内部状态更新
         self.model.Update()
-
         # 3. 请求重绘（Qt 会在下一帧调用 paintGL）
         self.update()
 
@@ -265,26 +281,6 @@ class Live2DAvatarController:
         """返回 Avatar 渲染控件。"""
         return self._render_widget
 
-    def on_drag(self, x: int, y: int) -> None:
-        """处理鼠标跟随（对应 Live2D 的 model.Drag）。
-
-        说明：实际已在 Live2DAvatarWidget._on_frame 中调用，
-        此处保留协议接口，外部也可主动调用。
-        """
-        if self.model:
-            self.model.Drag(x, y)
-
-    def on_update(self) -> None:
-        """每帧更新 Avatar 内部状态（对应 Live2D 的 model.Update）。
-
-        说明：实际已在 Live2DAvatarWidget._on_frame 中调用，
-        此处保留协议接口。注意：不要递归调用自己！
-        """
-        if self.model:
-            self.model.Update()
-
-        if self.model.IsMotionFinished():
-            self.model.StartRandomMotion("Idle", live2d.MotionPriority.IDLE)
 
     def on_click(self, x: int, y: int) -> None:
         """处理原始点击坐标（可调用 Live2D HitTest）。"""
@@ -304,6 +300,46 @@ class Live2DAvatarController:
         """处理摇晃。"""
         print("[Live2DAvatarController] 检测到摇晃")
         self.play_motion("FlickHead")
+
+    def on_drag_start(self, direction: str) -> None:
+        """拖拽开始：播放被抓住的动画 + 惊讶表情。
+
+        设计说明：
+        - 优先尝试播放 Tap 动作（Epsilon 模型有此动作组）。
+        - 同时切换到 surprised 表情（若模型支持）。
+        - 若动作/表情不存在，静默忽略，不影响拖拽本身。
+
+        Args:
+            direction: 拖拽初始方向 "left"/"right"/"up"/"down"。
+        """
+        print(f"[Live2DAvatarController] 拖拽开始(方向:{direction}) → 被抓住动画")
+        self.play_motion("Tap")
+        self.change_expression("surprised")
+
+    def on_drag_direction(self, direction: str) -> None:
+        """拖拽方向变化：可让角色朝拖拽方向倾斜/视线跟随。
+
+        设计说明：
+        - 当前仅打印日志，后续可调用 Live2D 参数让角色身体倾斜。
+        - 例如：向左拖拽时增加 ParamAngleX 的负值，向右增加正值。
+
+        Args:
+            direction: 方向 "left"/"right"/"up"/"down"。
+        """
+        # TODO: 接入 model.SetParameterValue 实现身体倾斜
+        # 例如：if direction == "left": model.SetParameterValue("ParamAngleX", -15, 1.0)
+        pass
+
+    def on_drag_end(self) -> None:
+        """拖拽结束：播放放下的动画 + 恢复 happy 表情。
+
+        设计说明：
+        - 尝试播放 Idle 动作让角色回到待机姿态。
+        - 切换回 happy 表情。
+        """
+        print("[Live2DAvatarController] 拖拽结束 → 恢复待机")
+        self.play_motion("Idle")
+        self.change_expression("happy")
 
     def play_motion(self, motion_name: str) -> None:
         """播放指定动作组中的随机动作。"""
@@ -426,11 +462,13 @@ def main() -> None:
     manager.set_avatar_controller(controller)
 
     # 注册示例 HitArea
-    manager.lover_window.register_hit_area("head", QRect(100, 60, 100, 80))
-    manager.lover_window.register_hit_area("body", QRect(90, 150, 120, 140))
+    manager.lover_window.register_hit_area("head", QRect(0,0,settings.CHARACTER_WINDOW_SIZE[0], settings.CHARACTER_WINDOW_SIZE[1] // 6 ))
+    manager.lover_window.register_hit_area("body", QRect(0,settings.CHARACTER_WINDOW_SIZE[0] // 6, settings.CHARACTER_WINDOW_SIZE[0], settings.CHARACTER_WINDOW_SIZE[1]))
 
     # 监听用户发送消息，模拟 Agent 回复
     event_bus.user_message_sent.connect(on_user_message)
+
+    event_bus.application_quit_requested.connect((sys.exit))
 
     manager.run()
     sys.exit(app.exec())

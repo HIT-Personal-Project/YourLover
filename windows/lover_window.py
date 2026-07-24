@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 from collections import deque
 
-from PySide6.QtCore import Qt, QPoint, QRect, QTimer, Signal
+from PySide6.QtCore import Qt, QPoint, QRect, QTimer, Signal, QEvent
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QWidget
 
@@ -28,6 +28,9 @@ from core.event_bus import event_bus
 from windows.base_window import BaseWindow
 from widgets.menu.context_menu import ContextMenu
 from widgets.menu.menu_builder import MenuBuilder
+
+from core.config import settings
+
 
 
 class LoverWindow(BaseWindow):
@@ -70,9 +73,13 @@ class LoverWindow(BaseWindow):
         self._drag_start_pos: QPoint = QPoint()
         self._drag_start_global_pos: QPoint = QPoint()
 
+        # 拖拽动画控制：只有真正发生定向移动后才触发拖拽动画
+        self._drag_started_emitted: bool = False  # 是否已发射 avatar_drag_started
+        self._drag_move_threshold: int = 20        # 触发拖拽动画的最小累计移动距离（像素）
+
         # 摇晃检测：记录最近 N 次水平拖拽位移
-        self._drag_history: deque[int] = deque(maxlen=10)
-        self._shake_threshold: int = 6  # 方向变化次数阈值
+        self._drag_history: deque[int] = deque(maxlen=20)
+        self._shake_threshold: int = 3  # 方向变化次数阈值
         self._shake_cooldown: bool = False
         super().__init__(parent)
 
@@ -93,12 +100,13 @@ class LoverWindow(BaseWindow):
         self.setCentralWidget(self._central_widget)
 
         # 默认尺寸，后续可根据 Avatar 模型尺寸调整
-        self.setFixedSize(320, 400)
+        ########## TODO #############
+        self.setFixedSize(*settings.CHARACTER_WINDOW_SIZE)
 
         # 默认右键菜单
         self._context_menu = (
             MenuBuilder()
-            .add_home("主页")
+            .add_home("聊天")
             .add_settings("设置")
             .add_separator()
             .add_quit("退出")
@@ -131,16 +139,32 @@ class LoverWindow(BaseWindow):
         设计说明：
         - LoverWindow 不直接依赖 live2d-py，只负责提供渲染容器。
         - Avatar 渲染控件由外部（如 WindowManager 或 AvatarController）创建并注入。
+        - 注入后会让 widget 鼠标事件穿透，并安装事件过滤器作为后备。
+
+        鼠标事件处理（双重保险）：
+        1. WA_TransparentForMouseEvents：让 Avatar widget 不接收鼠标事件，
+           事件直接穿透到本窗口的 mousePressEvent 等（参考 Simplel2dTest 做法）。
+        2. installEventFilter：作为后备，若穿透未生效则由事件过滤器拦截。
+        两者互不冲突：若穿透生效，事件过滤器不会被触发。
 
         Args:
             widget: Avatar 渲染控件，需为 QWidget 子类。
         """
+        # 移除旧 widget 的事件过滤器
         if self._avatar_widget is not None:
+            self._avatar_widget.removeEventFilter(self)
             self._avatar_widget.setParent(None)
             self._avatar_widget.deleteLater()
 
         self._avatar_widget = widget
         self.setCentralWidget(widget)
+
+        # ★ 关键：让 Avatar widget 鼠标事件穿透到本窗口
+        # 这样 mousePressEvent / mouseMoveEvent / mouseReleaseEvent 能正常触发
+        widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        # 后备：安装事件过滤器（穿透生效时不会被触发，无副作用）
+        widget.installEventFilter(self)
 
     def register_hit_area(self, name: str, rect: QRect) -> None:
         """注册一个可点击区域（HitArea）。
@@ -181,6 +205,52 @@ class LoverWindow(BaseWindow):
                 return
 
     # ============================================================
+    # 事件过滤器（拦截 Avatar widget 的鼠标事件）
+    # ============================================================
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        """事件过滤器：拦截 Avatar widget 的鼠标事件。
+
+        设计说明：
+        - Avatar widget（如 QOpenGLWidget）作为 central widget 覆盖整个客户区，
+          默认会消费鼠标事件，导致本窗口的 mousePressEvent 等无法触发。
+        - 这里在事件到达 Avatar widget 之前拦截，转交给 _handle_mouse_* 统一处理。
+        - 返回 True 表示事件已处理，不再传递给 Avatar widget（避免重复消费）。
+
+        Args:
+            obj: 事件目标对象。
+            event: 事件对象。
+
+        Returns:
+            True 表示已处理并拦截；False 表示放行。
+        """
+        if obj is self._avatar_widget:
+            etype = event.type()
+            if etype == QEvent.Type.MouseButtonPress:
+                self._handle_mouse_press(event)
+                return True
+            elif etype == QEvent.Type.MouseMove:
+                self._handle_mouse_move(event)
+                return True
+            elif etype == QEvent.Type.MouseButtonRelease:
+                self._handle_mouse_release(event)
+                return True
+        return super().eventFilter(obj, event)
+
+    def _map_to_window(self, pos: QPoint) -> QPoint:
+        """将 Avatar widget 本地坐标转换为 LoverWindow 本地坐标。
+
+        Args:
+            pos: 相对于 Avatar widget 的坐标。
+
+        Returns:
+            相对于 LoverWindow 客户区的坐标。
+        """
+        if self._avatar_widget is not None:
+            return self._avatar_widget.mapTo(self, pos)
+        return pos
+
+    # ============================================================
     # 拖拽交互
     # ============================================================
 
@@ -192,44 +262,119 @@ class LoverWindow(BaseWindow):
         """
         self._draggable = enabled
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        """鼠标按下事件：记录拖拽起点，右键弹出菜单。"""
+    def _handle_mouse_press(self, event: QMouseEvent) -> None:
+        """处理鼠标按下（由 mousePressEvent 或事件过滤器调用）。
+
+        设计说明：
+        - 按下时不立即触发拖拽动画，只记录起点。
+        - 只有在后续 mouseMove 中累计移动超过阈值后，才发射 avatar_drag_started。
+        - 这样快速点击（按下立即释放）不会误触发拖拽动画。
+
+        Args:
+            event: 鼠标事件。event.position() 是相对于事件来源 widget 的坐标。
+        """
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = True
-            self._drag_start_pos = event.position().toPoint()
+            # 坐标统一转换为 LoverWindow 本地坐标
+            self._drag_start_pos = self._map_to_window(event.position().toPoint())
             self._drag_start_global_pos = event.globalPosition().toPoint()
+            # 重置拖拽动画标志：等真正移动后才触发
+            self._drag_started_emitted = False
         elif event.button() == Qt.MouseButton.RightButton:
             self._show_context_menu(event.globalPosition().toPoint())
 
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        """鼠标移动事件：执行窗口拖拽并检测摇晃手势。"""
+    def _handle_mouse_move(self, event: QMouseEvent) -> None:
+        """处理鼠标移动：执行窗口拖拽并检测摇晃手势。
+
+        设计说明：
+        - 只有累计移动超过阈值后才发射 avatar_drag_started（避免快速点击误触发）。
+        - 拖拽过程中根据本次移动增量方向，发射 avatar_drag_direction。
+        """
         if not self._draggable or not self._dragging:
             return
 
+        # 本次移动的增量（_drag_start_global_pos 每帧更新，所以 delta 是单帧增量）
         delta = event.globalPosition().toPoint() - self._drag_start_global_pos
+
+        # 首次定向移动才触发拖拽动画
+        if not self._drag_started_emitted:
+            move_distance = delta.manhattanLength()
+            if move_distance >= self._drag_move_threshold:
+                # 累计移动超过阈值，确认是拖拽而非点击
+                self._drag_started_emitted = True
+                direction = self._calc_drag_direction(delta.x(), delta.y())
+                # 拖拽开始，携带初始方向
+                event_bus.avatar_drag_started.emit(direction)
+
+        # 执行窗口移动
         self.move(self.pos() + delta)
         self._drag_start_global_pos = event.globalPosition().toPoint()
         event_bus.avatar_dragged.emit(delta.x(), delta.y())
+
+        # 拖拽方向信号（只在拖拽动画已触发后才发方向，避免点击抖动）
+        if self._drag_started_emitted and (delta.x() != 0 or delta.y() != 0):
+            direction = self._calc_drag_direction(delta.x(), delta.y())
+            event_bus.avatar_drag_direction.emit(direction)
 
         # 摇晃检测：记录水平位移方向变化
         self._drag_history.append(delta.x())
         self._detect_shake()
 
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        """鼠标释放事件：结束拖拽，同时处理点击。"""
+    @staticmethod
+    def _calc_drag_direction(dx: int, dy: int) -> str:
+        """根据单帧移动增量计算主方向。
+
+        判定逻辑：
+        - 比较水平/垂直位移绝对值，取较大者作为主方向。
+        - dx > 0 → "right"，dx < 0 → "left"
+        - dy > 0 → "down"（屏幕 y 轴向下为正），dy < 0 → "up"
+
+        Args:
+            dx: 水平增量（像素）。
+            dy: 垂直增量（像素）。
+
+        Returns:
+            方向字符串："left" / "right" / "up" / "down"。
+        """
+        if abs(dx) >= abs(dy):
+            return "right" if dx > 0 else "left"
+        else:
+            return "down" if dy > 0 else "up"
+
+    def _handle_mouse_release(self, event: QMouseEvent) -> None:
+        """处理鼠标释放：结束拖拽，同时处理点击。
+
+        设计说明：
+        - 若未发生过定向移动（快速点击），不触发拖拽结束动画。
+        - 若发生过定向移动（真正拖拽），触发 avatar_drag_finished → on_drag_end。
+        """
         if event.button() == Qt.MouseButton.LeftButton and self._dragging:
             self._dragging = False
-            event_bus.avatar_drag_finished.emit(
-                event.globalPosition().toPoint().x(),
-                event.globalPosition().toPoint().y(),
-            )
 
-            # 若移动距离很小，视为点击而非拖拽
-            move_distance = (
-                event.position().toPoint() - self._drag_start_pos
-            ).manhattanLength()
+            local_pos = self._map_to_window(event.position().toPoint())
+            move_distance = (local_pos - self._drag_start_pos).manhattanLength()
+
             if move_distance < 5:
-                self.on_avatar_clicked(event.position().toPoint())
+                # 移动距离很小，视为点击（未发生拖拽）
+                self.on_avatar_clicked(local_pos)
+            elif self._drag_started_emitted:
+                # 真正拖拽过，触发拖拽结束动画
+                event_bus.avatar_drag_finished.emit(
+                    event.globalPosition().toPoint().x(),
+                    event.globalPosition().toPoint().y(),
+                )
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        """鼠标按下事件（点击在窗口空白区域时触发，Avatar 区域由事件过滤器处理）。"""
+        self._handle_mouse_press(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        """鼠标移动事件。"""
+        self._handle_mouse_move(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        """鼠标释放事件。"""
+        self._handle_mouse_release(event)
 
     # ============================================================
     # 右键菜单

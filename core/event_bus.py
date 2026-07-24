@@ -35,14 +35,20 @@ class EventBus(QObject):
     # Avatar / 桌面宠物交互事件
     # ============================================================
 
-    # 参数：部位名称（如 "head", "face", "body", "hand"）
+    # 参数：部位名称（如 "head", "face", "body", "hand" ----- and so on）
     avatar_hit_area_clicked = Signal(str)
 
     # 参数：鼠标在屏幕上的全局坐标 x, y
     avatar_clicked = Signal(int, int)
 
+    # 参数：拖拽初始方向（"left", "right", "up", "down"），首次定向移动时触发
+    avatar_drag_started = Signal(str)
+
     # 参数：拖拽偏移量 dx, dy（本次移动的像素差）
     avatar_dragged = Signal(int, int)
+
+    # 参数：拖拽方向（"left", "right", "up", "down"），拖拽过程中持续触发
+    avatar_drag_direction = Signal(str)
 
     # 参数：拖拽结束时的全局坐标 x, y
     avatar_drag_finished = Signal(int, int)
@@ -52,6 +58,10 @@ class EventBus(QObject):
 
     # Avatar 状态变化，参数：状态名（如 "Idle", "Thinking", "Speaking"）
     avatar_state_changed = Signal(str)
+
+    # Avatar 表情变化，参数：表情名（如 "Happy", "Sad", "Angry"）
+    avatar_expression_changed = Signal(str)
+    
 
     # ============================================================
     # 右键菜单 / 导航事件
@@ -87,6 +97,16 @@ class EventBus(QObject):
 
     # 流式回复片段，参数：当前片段文本
     agent_stream_chunk = Signal(str)
+
+
+    # ============================================================
+    # 状态栏控制事件
+    # ============================================================
+    state_emotion_change = Signal(str)
+
+    state_love_change = Signal(int)
+
+
 
     # ============================================================
     # 设置面板事件

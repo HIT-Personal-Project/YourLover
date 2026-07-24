@@ -339,3 +339,27 @@ class OptionSettingItem(SettingItem):
         index = self._combo_box.findData(value)
         if index >= 0:
             self._combo_box.setCurrentIndex(index)
+
+
+
+class TipSettingItem(SettingItem):
+    """文本提示词。"""    
+
+    def create_editor(self, parent: QWidget) -> QWidget:        # 新增一行小 tip
+        self.tip_label = QLabel("💡 提示：修改设置后，请点击底部「保存」按钮生效",parent)
+        # 设置样式让它看起来像温和的提示（灰色、小字号）
+        self.tip_label.setStyleSheet("""
+            color: #888888; 
+            font-size: 12px; 
+            padding: 8px 0px;
+            border: none;
+        """)
+        # 允许文本自动换行，防止过长被截断
+        self.tip_label.setWordWrap(True)
+        # 设置为弱文本，在界面上不会抢占焦点
+        self.tip_label.setTextInteractionFlags(Qt.NoTextInteraction)
+
+        return self.tip_label
+
+    def _update_editor(self, value: Any) -> None:
+        pass

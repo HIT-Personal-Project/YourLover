@@ -1,3 +1,4 @@
+from widgets.settings.setting_item import TipSettingItem
 """
 设置窗口模块
 负责：
@@ -92,9 +93,11 @@ class SettingWindow(BaseWindow):
         self._title_label = QLabel("设置")
         self._title_label.setObjectName("setting_title")
 
-        self._close_button = QPushButton("×")
-        self._close_button.setFixedSize(28, 28)
+        # 将固定尺寸改为稍大的值，确保文字有足够空间
+        self._close_button = QPushButton("✕")  # 建议使用图标字符代替"关闭"二字
+        self._close_button.setFixedSize(32, 32)
         self._close_button.setToolTip("关闭设置")
+        self._close_button.setObjectName("close_button")  # ← 关键：添加 objectName
 
         self._header_layout.addWidget(self._title_label)
         self._header_layout.addStretch()
@@ -177,6 +180,19 @@ class SettingWindow(BaseWindow):
             QPushButton#save_button:pressed {
                 background-color: #be185d;
             }
+            QPushButton#close_button {
+                padding: 0px;
+                border: none;
+                background-color: transparent;
+                color: #be185d;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton#close_button:hover {
+                background-color: #fce7f3;
+                border-radius: 16px;
+            }
+
             """
         )
         self._save_button.setObjectName("save_button")
@@ -306,6 +322,30 @@ class SettingWindow(BaseWindow):
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._animation.start()
 
+    
+    # 窗口可移动
+    def mousePressEvent(self, event) -> None:
+        """记录鼠标按下时的全局偏移量。"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            # 记录鼠标全局位置与窗口左上角的差值
+            self._drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event) -> None:
+        """根据偏移量实时更新窗口位置。"""
+        if self._dragging and self._drag_position is not None:
+            new_pos = event.globalPosition().toPoint() - self._drag_position
+            self.move(new_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        """释放鼠标时停止拖拽。"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            self._drag_position = None
+            event.accept()
+
     # ============================================================
     # 预置常用设置项（便于快速扩展）
     # ============================================================
@@ -329,16 +369,17 @@ class SettingWindow(BaseWindow):
             )
         )
         self.add_setting_item(
-            ToggleSettingItem(
-                key="always_on_top",
-                label="窗口置顶",
-                default_value=True,
-            )
-        )
-        self.add_setting_item(
             TextSettingItem(
                 key="api_base",
                 label="API 地址",
                 default_value="http://localhost:11434",
             )
         )
+        self.add_setting_item(
+            TipSettingItem(
+                key="tip",
+                label="提示",
+                default_value="",
+            )
+        )
+

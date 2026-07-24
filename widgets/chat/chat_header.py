@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QWidget,
+    QProgressBar,          # 新增导入
 )
 
 from widgets.base.base_widget import BaseWidget
@@ -43,8 +44,11 @@ class ChatHeader(BaseWidget):
         Args:
             parent: 父级 QWidget。
         """
-        self._title: str = "虚拟助手"
+        self._title: str = "YourLover"
         self._status: str = "在线"
+        # 新增内部状态，便于后续更新
+        self._affection_value: int = 100
+        self._emotional_state: str = "开心😊"
         super().__init__(parent)
 
     def setup_ui(self) -> None:
@@ -76,6 +80,48 @@ class ChatHeader(BaseWidget):
         info_layout.addWidget(self._title_label)
         info_layout.addWidget(self._status_label)
 
+        #好感度和情绪
+        affection_layout = QHBoxLayout()
+        affection_layout.setSpacing(0)          # 改为0，让爱心、进度条、百分比紧贴
+        affection_layout.setContentsMargins(0, 0, 0, 0)
+
+
+        # 原有的 _affection_label 改为显示百分比数值（保留原属性名）
+        self._affection_label = QLabel(f"  {self._affection_value}❤️", self)
+        self._affection_label.setObjectName("affection_label")
+        self._affection_label.setFont(QFont("Microsoft YaHei", 9))
+        self._affection_label.setStyleSheet("color: #be185d; font-weight: bold;")
+
+
+        # 新增好感度进度条
+        self._affection_progress = QProgressBar(self)
+        self._affection_progress.setObjectName("affection_progress")
+        self._affection_progress.setRange(0, 100)
+        self._affection_progress.setValue(self._affection_value)
+        self._affection_progress.setTextVisible(False)
+        self._affection_progress.setFixedWidth(120)
+        self._affection_progress.setFixedHeight(16)
+
+        # 将图标、进度条和数值标签依次加入好感度布局
+        affection_layout.addWidget(self._affection_progress)
+        affection_layout.addWidget(self._affection_label)
+
+        # 情绪标签（保留原有属性，但样式改为圆角背景）
+        self._emotional_label = QLabel(self._emotional_state, self)
+        self._emotional_label.setObjectName("emotional_label")
+        self._emotional_label.setFont(QFont("Microsoft YaHei", 9))
+        self._emotional_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._emotional_label.setFixedHeight(24)
+        # 初始样式在 apply_style 中统一设置
+
+        # 将好感度和情绪放在同一行，方便与标题对齐
+        status_widget = QWidget()
+        status_layout = QHBoxLayout(status_widget)
+        status_layout.setSpacing(12)
+        status_layout.addLayout(affection_layout)
+        status_layout.addWidget(self._emotional_label)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+
         # 设置按钮
         self._settings_button = QPushButton("⚙", self)
         self._settings_button.setObjectName("settings_btn")
@@ -85,7 +131,7 @@ class ChatHeader(BaseWidget):
 
         self._layout.addWidget(self._avatar_label)
         self._layout.addLayout(info_layout)
-        self._layout.addStretch()
+        self._layout.addWidget(status_widget, 1)   # 占用弹性空间
         self._layout.addWidget(self._settings_button)
 
         self.apply_style()
@@ -123,9 +169,54 @@ class ChatHeader(BaseWidget):
             QPushButton#settings_btn:pressed {
                 background-color: #f9a8d4;
             }
+            /* 新增进度条样式 */
+            QProgressBar#affection_progress {
+                border: none;
+                background-color: #fce7f3;
+                border-radius: 8px;
+                height: 16px;
+                margin: 0;          /* 去除外边距 */
+                padding: 0;         /* 去除内边距 */
+            }
+            QProgressBar#affection_progress::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #f472b6, stop:1 #be185d);
+                border-radius: 8px;
+            }
+            /* 情绪标签样式（在代码中动态更新，这里保留默认） */
+            QLabel#emotional_label {
+                background-color: #fce7f3;
+                border-radius: 12px;
+                padding: 0 12px;
+                color: #be185d;
+            }
             """
         )
 
+    # ---------- 新增更新接口（保留原有接口不变） ----------
+    def set_affection(self, value: int) -> None:
+        """更新好感度数值（0~100），进度条和数值同步变化"""
+        clamped = max(0, min(100, value))
+        self._affection_value = clamped
+        self._affection_progress.setValue(clamped)
+        self._affection_label.setText(f"{clamped}%")
+
+    def set_emotional(self, state: str, color: str = "#be185d", bg_color: str = "#fce7f3") -> None:
+        """更新情绪状态，可自定义文字颜色和背景色"""
+        self._emotional_state = state
+        self._emotional_label.setText(state)
+        self._emotional_label.setStyleSheet(
+            f"""
+            QLabel#emotional_label {{
+                background-color: {bg_color};
+                border-radius: 12px;
+                padding: 0 12px;
+                color: {color};
+            }}
+            """
+        )
+
+    # ------------------ 以下为原有接口（完全保留） ------------------
     def set_status(self, text: str, color: str = "#ec4899") -> None:
         """设置状态文本与颜色。
 

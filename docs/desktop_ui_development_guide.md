@@ -115,7 +115,9 @@ FakeAgentWorker.run()
 |------|------|------|
 | Avatar 交互 | `avatar_clicked(x, y)` | Avatar 区域被点击 |
 | | `avatar_hit_area_clicked(area_name)` | 命中 HitArea |
+| | `avatar_drag_started(direction)` | 拖拽开始，带初始方向 `"left"/"right"/"up"/"down"` |
 | | `avatar_dragged(dx, dy)` | 拖拽中 |
+| | `avatar_drag_direction(direction)` | 拖拽过程中方向变化 |
 | | `avatar_drag_finished(x, y)` | 拖拽结束 |
 | | `avatar_shaken()` | 检测到摇晃 |
 | | `avatar_state_changed(state)` | Avatar 状态变化 |
@@ -222,17 +224,25 @@ FakeAgentWorker.run()
 - `set_avatar_controller(controller)`：注入 AvatarController。
 - `show_chat()` / `show_settings()`：显示二级窗口。
 
-#### `avatar_controller_protocol.py`
+#### `avatar/avatar_controller_protocol.py`
+
+> ⚠️ 本文件属于 `avatar/` 模块，不在 `windows/` 下。
 
 定义 `AvatarControllerProtocol`，规定 Avatar 控制器必须实现的方法：
 
 - `on_click(x, y)`：原始点击坐标。
 - `on_hit_area(area_name)`：命中区域。
 - `on_shake()`：摇晃手势。
+- `on_drag_start(direction)`：拖拽开始，带初始方向 `"left"/"right"/"up"/"down"`。
+- `on_drag_direction(direction)`：拖拽过程中方向变化。
+- `on_drag_end()`：拖拽结束。
 - `on_drag(x, y)`：每帧鼠标跟随。
 - `on_update()`：每帧模型更新。
 - `play_motion(name)` / `change_expression(name)` / `set_state(name)`。
 - `get_render_widget()`：返回渲染控件。
+
+**位置说明**：协议定义的是 Avatar 控制器的接口契约，逻辑上属于 avatar 模块。
+依赖方向：`windows` → `avatar.avatar_controller_protocol`（协议），`avatar.controller` → `avatar.avatar_controller_protocol`（实现），无循环依赖。
 
 ### 3.2 widgets/ 目录
 
@@ -740,5 +750,5 @@ def quit(self) -> None:
 | 新增设置项类型 | `widgets/settings/setting_item.py` |
 | 新增设置项实例 | `windows/setting_window.py` |
 | 新增全局事件 | `core/event_bus.py` |
-| 调整 Avatar 交互 | `windows/avatar_controller_protocol.py`、具体 `AvatarController` 实现 |
+| 调整 Avatar 交互 | `avatar/avatar_controller_protocol.py`、`avatar/controller.py`（具体 `AvatarController` 实现） |
 | 运行演示 | `demos/desktop_ui_demo.py` |

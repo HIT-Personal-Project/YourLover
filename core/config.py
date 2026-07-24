@@ -67,6 +67,12 @@ class Settings():
 
     TEST_SYSTEM_PROMPT: str = """你是一个温柔、善解人意的情感陪伴助手。请用温暖、关怀的语言回应用户。
         注意用户的情感状态，根据用户的情绪给予适当的安慰和鼓励。"""
+    
+
+    CHARACTER_WINDOW_SIZE: tuple = (200, 600) #角色窗口尺寸
+
+    DEFAULT_MODEL_PATH = "./assets/models/hiyori/hiyori_pro_t11.model3.json"
+
 
 
 
