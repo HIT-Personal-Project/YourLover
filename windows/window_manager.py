@@ -83,7 +83,6 @@ class WindowManager:
         event_bus.avatar_state_changed.connect(self._on_avatar_state_changed)
         # 拖拽动画：开始时播放被抓住动画，结束时播放放下动画，过程中传方向
         event_bus.avatar_drag_started.connect(self._on_avatar_drag_started)
-        event_bus.avatar_drag_direction.connect(self._on_avatar_drag_direction)
         event_bus.avatar_drag_finished.connect(self._on_avatar_drag_finished)
 
         # 示例：收到 Agent 回复后更新聊天窗口（后续由 AgentClient 发送事件）
@@ -183,14 +182,6 @@ class WindowManager:
         if self._avatar_controller is not None:
             self._avatar_controller.on_drag_start(direction)
 
-    def _on_avatar_drag_direction(self, direction: str) -> None:
-        """将拖拽方向转发给 AvatarController（角色可朝拖拽方向倾斜）。
-
-        Args:
-            direction: 方向字符串 "left"/"right"/"up"/"down"。
-        """
-        if self._avatar_controller is not None:
-            self._avatar_controller.on_drag_direction(direction)
 
     def _on_avatar_drag_finished(self, x: int, y: int) -> None:
         """将拖拽结束事件转发给 AvatarController（播放放下的动画）。

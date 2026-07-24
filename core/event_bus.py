@@ -47,9 +47,6 @@ class EventBus(QObject):
     # 参数：拖拽偏移量 dx, dy（本次移动的像素差）
     avatar_dragged = Signal(int, int)
 
-    # 参数：拖拽方向（"left", "right", "up", "down"），拖拽过程中持续触发
-    avatar_drag_direction = Signal(str)
-
     # 参数：拖拽结束时的全局坐标 x, y
     avatar_drag_finished = Signal(int, int)
 

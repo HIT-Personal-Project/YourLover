@@ -311,11 +311,6 @@ class LoverWindow(BaseWindow):
         self._drag_start_global_pos = event.globalPosition().toPoint()
         event_bus.avatar_dragged.emit(delta.x(), delta.y())
 
-        # 拖拽方向信号（只在拖拽动画已触发后才发方向，避免点击抖动）
-        if self._drag_started_emitted and (delta.x() != 0 or delta.y() != 0):
-            direction = self._calc_drag_direction(delta.x(), delta.y())
-            event_bus.avatar_drag_direction.emit(direction)
-
         # 摇晃检测：记录水平位移方向变化
         self._drag_history.append(delta.x())
         self._detect_shake()
