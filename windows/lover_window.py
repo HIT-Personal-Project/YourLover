@@ -75,12 +75,13 @@ class LoverWindow(BaseWindow):
 
         # 拖拽动画控制：只有真正发生定向移动后才触发拖拽动画
         self._drag_started_emitted: bool = False  # 是否已发射 avatar_drag_started
-        self._drag_move_threshold: int = 20        # 触发拖拽动画的最小累计移动距离（像素）
+        self._drag_move_threshold: int = 100        # 触发拖拽动画的最小累计移动距离（像素）
 
         # 摇晃检测：记录最近 N 次水平拖拽位移
         self._drag_history: deque[int] = deque(maxlen=20)
         self._shake_threshold: int = 3  # 方向变化次数阈值
         self._shake_cooldown: bool = False
+        self._shake_triggered: bool = False  # 本次按下-释放过程中是否触发过摇晃
         super().__init__(parent)
 
     def _setup_window_flags(self) -> None:
@@ -280,6 +281,8 @@ class LoverWindow(BaseWindow):
             self._drag_start_global_pos = event.globalPosition().toPoint()
             # 重置拖拽动画标志：等真正移动后才触发
             self._drag_started_emitted = False
+            # 重置摇晃标志：本次按下-释放周期开始
+            self._shake_triggered = False
         elif event.button() == Qt.MouseButton.RightButton:
             self._show_context_menu(event.globalPosition().toPoint())
 
@@ -337,27 +340,33 @@ class LoverWindow(BaseWindow):
             return "down" if dy > 0 else "up"
 
     def _handle_mouse_release(self, event: QMouseEvent) -> None:
-        """处理鼠标释放：结束拖拽，同时处理点击。
+        """处理鼠标释放：根据本次按下-释放过程的行为，触发对应事件。
 
-        设计说明：
-        - 若未发生过定向移动（快速点击），不触发拖拽结束动画。
-        - 若发生过定向移动（真正拖拽），触发 avatar_drag_finished → on_drag_end。
+        设计说明（三者互斥）：
+        - 若本次发生过摇晃（_shake_triggered）：不触发任何事件，摇晃动画已在检测时播放。
+        - 若本次发生过拖拽（_drag_started_emitted）：触发 avatar_drag_finished → on_drag_end。
+        - 若本次是快速点击（未移动）：触发 on_avatar_clicked。
+        - 其他情况（轻微移动但未达拖拽阈值）：忽略，不触发任何事件。
         """
         if event.button() == Qt.MouseButton.LeftButton and self._dragging:
             self._dragging = False
 
-            local_pos = self._map_to_window(event.position().toPoint())
-            move_distance = (local_pos - self._drag_start_pos).manhattanLength()
-
-            if move_distance < 5:
-                # 移动距离很小，视为点击（未发生拖拽）
-                self.on_avatar_clicked(local_pos)
+            if self._shake_triggered:
+                # 摇晃过：摇晃动画已播放，释放时不触发任何事件
+                pass
             elif self._drag_started_emitted:
-                # 真正拖拽过，触发拖拽结束动画
+                # 拖拽过：触发拖拽结束动画
                 event_bus.avatar_drag_finished.emit(
                     event.globalPosition().toPoint().x(),
                     event.globalPosition().toPoint().y(),
                 )
+            else:
+                # 未发生拖拽/摇晃，判断是否为快速点击
+                local_pos = self._map_to_window(event.position().toPoint())
+                move_distance = (local_pos - self._drag_start_pos).manhattanLength()
+                if move_distance < 5:
+                    self.on_avatar_clicked(local_pos)
+                # else: 轻微移动但未达拖拽阈值，忽略
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         """鼠标按下事件（点击在窗口空白区域时触发，Avatar 区域由事件过滤器处理）。"""
@@ -429,6 +438,7 @@ class LoverWindow(BaseWindow):
 
         if direction_changes >= self._shake_threshold:
             self.shake_avatar()
+            self._shake_triggered = True   # 标记本次发生过摇晃，释放时不触发点击/拖拽结束
             self._shake_cooldown = True
             self._drag_history.clear()
             QTimer.singleShot(1000, self._reset_shake_cooldown)
