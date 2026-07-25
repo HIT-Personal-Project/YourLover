@@ -75,7 +75,7 @@ class LoverWindow(BaseWindow):
 
         # 拖拽动画控制：只有真正发生定向移动后才触发拖拽动画
         self._drag_started_emitted: bool = False  # 是否已发射 avatar_drag_started
-        self._drag_move_threshold: int = 100        # 触发拖拽动画的最小累计移动距离（像素）
+        self._drag_move_threshold: int = 20        # 触发拖拽动画的最小累计移动距离（像素）
 
         # 摇晃检测：记录最近 N 次水平拖拽位移
         self._drag_history: deque[int] = deque(maxlen=20)

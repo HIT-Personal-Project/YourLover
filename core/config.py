@@ -11,7 +11,7 @@ class Settings():
     APP_NAME: str = "校园情感陪伴助手"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
-    CHAT_MODEL_NAME = "qwen3-vl:4b" #聊天模型
+    CHAT_MODEL_NAME = "qwen2.5:3b" #聊天模型
     EMBEDDING_MODEL_NAME = "qwen3-embedding:4b" #向量化模型
     ROUTER_MODEL_NAME = "qwen2.5:3b" #REACT路由判断模型
     # DATABASE_URL: str = "sqlite:///./data/sqlite/example_db.sqlite3"

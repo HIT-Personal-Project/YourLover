@@ -323,10 +323,14 @@ class ChatWindow(BaseWindow):
         """
         content = event.payload.get("content", "")
         if self._current_agent_bubble is None:
+            # 非流式模式：直接追加完整回复
             self.append_agent_message(content)
         else:
+            # 流式模式：更新最后一条已有的 Agent 气泡
             self.update_last_agent_message(content)
-            self._current_agent_bubble = None
+        # 无论哪种模式，回复处理结束后都要清空当前 Agent 气泡引用，
+        # 避免下次回复时错误更新到最后一条消息（可能是用户消息）。
+        self._current_agent_bubble = None
 
         self.set_status("在线", "#10b981")
         self.set_input_enabled(True)
