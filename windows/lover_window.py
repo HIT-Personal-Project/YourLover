@@ -59,6 +59,9 @@ class LoverWindow(BaseWindow):
 
     hit_area_clicked = Signal(str)
 
+    # 窗口位置变化信号，供 MiniChatOverlay 等跟随
+    position_changed = Signal(QPoint)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         """初始化悬浮窗口。
 
@@ -250,6 +253,20 @@ class LoverWindow(BaseWindow):
         if self._avatar_widget is not None:
             return self._avatar_widget.mapTo(self, pos)
         return pos
+
+    # ============================================================
+    # 窗口位置跟踪
+    # ============================================================
+
+    def moveEvent(self, event) -> None:  # noqa: N802
+        """窗口移动时发射 position_changed 信号。
+
+        设计说明：
+        - 拖拽过程中 self.move() 会触发 moveEvent。
+        - MiniChatOverlay 等跟随窗口通过监听此信号实现位置同步。
+        """
+        super().moveEvent(event)
+        self.position_changed.emit(self.pos())
 
     # ============================================================
     # 拖拽交互

@@ -47,6 +47,13 @@ class AgentController:
         return AgentMessage(state["history"][-1])
 
     
+    def chat_test(self,user_input:str,configurable:dict=None):
+        """
+        测试用，不调用ChatAgent，直接返回用户输入
+        """
+        return AgentMessage(user_input,"Happy") 
+
+    
     def APIConnect(self,LLM_type:str,LLM_name:str,url=None,api_key=None):
         """
         连接ChatAgent

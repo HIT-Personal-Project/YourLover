@@ -136,6 +136,10 @@ class ChatWindow(BaseWindow):
         event_bus.agent_reply_received.connect(self._on_agent_reply_received)
         event_bus.agent_stream_chunk.connect(self._on_agent_stream_chunk)
 
+        #更新状态栏
+        event_bus.state_emotion_change.connect(self._header.set_emotional)
+        event_bus.state_love_change.connect(self._header.set_affection)
+
     def apply_style(self) -> None:
         """应用聊天窗口整体样式（卡通游戏风）。"""
         self.setStyleSheet(
@@ -154,7 +158,12 @@ class ChatWindow(BaseWindow):
     # ============================================================
 
     def create_new_session(self) -> None:
-        """新建一个会话并添加到列表中。"""
+        """新建一个会话并添加到列表中。
+
+        设计说明：
+        - 每个会话有独立的 session_id，通过 chat_session_changed 事件通知
+          AgentController 更新当前 session_id，确保 Agent 记忆隔离。
+        """
         session_id = uuid.uuid4().hex[:8]
         data = SessionData(
             session_id=session_id,
@@ -164,6 +173,8 @@ class ChatWindow(BaseWindow):
         )
         self._sessions[session_id] = {"messages": []}
         self._session_list.add_session(data)
+        # 通知 AgentController 切换到新会话
+        event_bus.chat_session_changed.emit(session_id)
 
     def switch_session(self, session_id: str) -> None:
         """切换到指定会话。
@@ -172,13 +183,18 @@ class ChatWindow(BaseWindow):
             session_id: 目标会话 ID。
         """
         self._session_list.select_session(session_id)
+        # 通知 AgentController 切换到该会话
+        event_bus.chat_session_changed.emit(session_id)
 
     def _on_session_clicked(self, session_id: str) -> None:
-        """会话被点击：恢复该会话的消息历史。
+        """会话被点击：恢复该会话的消息历史，并通知 AgentController 切换会话。
 
         Args:
             session_id: 会话 ID。
         """
+        # 通知 AgentController 切换到该会话
+        event_bus.chat_session_changed.emit(session_id)
+
         # 清空当前显示
         self._history.clear_history()
         self._current_agent_bubble = None

@@ -83,6 +83,10 @@ class EventBus(QObject):
     # 用户发送消息，参数：文本内容
     user_message_sent = Signal(str)
 
+    # 聊天窗口切换/新建会话，参数：session_id
+    # 用于通知 AgentController 更新当前 session_id，确保会话记忆隔离
+    chat_session_changed = Signal(str)
+
     # Agent 回复事件（已封装为 AgentEvent）
     agent_reply_received = Signal(AgentEvent)
 
@@ -94,6 +98,19 @@ class EventBus(QObject):
 
     # 流式回复片段，参数：当前片段文本
     agent_stream_chunk = Signal(str)
+
+    # ============================================================
+    # 迷你聊天（快速对话）事件
+    # ============================================================
+
+    # 用户在迷你输入框发送消息，参数：文本内容
+    mini_chat_input_sent = Signal(str)
+
+    # 迷你聊天开始思考（角色头顶气泡显示"思考中..."）
+    mini_chat_thinking_started = Signal()
+
+    # 迷你聊天收到回复，参数：回复文本（显示在角色头顶气泡）
+    mini_chat_reply_received = Signal(str)
 
 
     # ============================================================

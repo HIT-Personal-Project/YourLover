@@ -20,6 +20,7 @@ from core.event_bus import event_bus
 from avatar.avatar_controller_protocol import AvatarControllerProtocol
 from windows.chat_window import ChatWindow
 from windows.lover_window import LoverWindow
+from windows.mini_chat_overlay import MiniChatOverlay
 from windows.setting_window import SettingWindow
 
 
@@ -55,6 +56,7 @@ class WindowManager:
         self._lover_window = LoverWindow()
         self._chat_window = ChatWindow()
         self._setting_window = SettingWindow()
+        self._mini_chat_overlay = MiniChatOverlay()
 
         # 加载默认设置项（可替换为从配置文件读取）
         self._setting_window.add_default_settings()
@@ -88,6 +90,10 @@ class WindowManager:
         # 示例：收到 Agent 回复后更新聊天窗口（后续由 AgentClient 发送事件）
         event_bus.agent_reply_received.connect(self._on_agent_reply)
 
+        # 迷你聊天事件：思考时让 Avatar 播放思考动画，回复时播放说话动画
+        event_bus.mini_chat_thinking_started.connect(self._on_mini_chat_thinking)
+        event_bus.mini_chat_reply_received.connect(self._on_mini_chat_reply)
+
     # ============================================================
     # 公共接口
     # ============================================================
@@ -95,6 +101,8 @@ class WindowManager:
     def run(self) -> None:
         """启动窗口管理器，显示悬浮宠物窗口。"""
         self._lover_window.show_window()
+        # 设置迷你聊天浮层跟踪悬浮窗，并显示
+        self._mini_chat_overlay.set_target_window(self._lover_window)
 
     def quit(self) -> None:
         """退出应用。"""
@@ -216,6 +224,25 @@ class WindowManager:
         # 此处仅做窗口管理层的补充逻辑（如震动宠物）。
         self._lover_window.shake_avatar()
 
+    def _on_mini_chat_thinking(self) -> None:
+        """迷你聊天开始思考时，让 Avatar 播放思考动画。"""
+        if self._avatar_controller is not None:
+            # TODO: 接入真实思考动作/表情，具体名称根据模型而定
+            self._avatar_controller.change_expression("thinking")
+            self._avatar_controller.set_state("Thinking")
+
+    def _on_mini_chat_reply(self, reply_text: str) -> None:
+        """迷你聊天收到回复时，让 Avatar 播放说话动画。
+
+        Args:
+            reply_text: 回复文本（气泡显示由 MiniChatOverlay 处理）。
+        """
+        if self._avatar_controller is not None:
+            # TODO: 接入真实说话动作/表情
+            self._avatar_controller.play_motion("Tap")
+            self._avatar_controller.change_expression("happy")
+            self._avatar_controller.set_state("Speaking")
+
     # ============================================================
     # 属性访问
     # ============================================================
@@ -234,3 +261,8 @@ class WindowManager:
     def setting_window(self) -> SettingWindow:
         """返回设置窗口。"""
         return self._setting_window
+
+    @property
+    def mini_chat_overlay(self) -> MiniChatOverlay:
+        """返回迷你聊天浮层。"""
+        return self._mini_chat_overlay

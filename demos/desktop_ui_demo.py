@@ -420,6 +420,49 @@ def on_user_message(text: str) -> None:
 
 
 # ============================================================
+# 模拟迷你聊天 Agent 回复线程
+# ============================================================
+
+class FakeMiniChatWorker(QThread):
+    """模拟迷你聊天 Agent 回复工作线程。
+
+    与 FakeAgentWorker 区别：
+    - 发射 mini_chat_thinking_started / mini_chat_reply_received 信号。
+    - 回复直接在角色头顶气泡显示，不走大聊天窗口。
+    """
+
+    reply_ready = Signal(str)
+
+    def __init__(self, user_text: str) -> None:
+        super().__init__()
+        self._user_text = user_text
+
+    def run(self) -> None:
+        """模拟思考 + 回复。"""
+        # 通知开始思考
+        event_bus.mini_chat_thinking_started.emit()
+        time.sleep(1.2)
+        # 模拟回复
+        reply = f"收到：{self._user_text}～（迷你聊天模拟回复）"
+        self.reply_ready.emit(reply)
+
+
+def on_mini_chat_message(text: str) -> None:
+    """用户在迷你输入框发送消息后启动模拟回复。"""
+    worker = FakeMiniChatWorker(text)
+    worker.reply_ready.connect(event_bus.mini_chat_reply_received.emit)
+
+    def _on_finished() -> None:
+        _active_workers.discard(worker)
+        worker.deleteLater()
+
+    worker.finished.connect(_on_finished)
+
+    _active_workers.add(worker)
+    worker.start()
+
+
+# ============================================================
 # 入口
 # ============================================================
 
@@ -467,6 +510,9 @@ def main() -> None:
 
     # 监听用户发送消息，模拟 Agent 回复
     event_bus.user_message_sent.connect(on_user_message)
+
+    # 监听迷你聊天消息，模拟迷你聊天回复
+    event_bus.mini_chat_input_sent.connect(on_mini_chat_message)
 
     event_bus.application_quit_requested.connect((sys.exit))
 

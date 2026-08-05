@@ -109,6 +109,41 @@ FakeAgentWorker.run()
         → WindowManager._on_agent_reply()（窗口管理层补充逻辑：震动宠物）
 ```
 
+#### 示例 D：迷你聊天（快速对话）
+
+迷你聊天通过 `main.py` 中的 `AgentWorker` 调用 `AgentController`，与大聊天窗口共用同一个 Agent，但使用**独立的 session_id** 实现会话隔离。
+
+```text
+用户点击💬按钮
+    → MiniChatOverlay.expand() 展开输入框
+    → 用户输入文本 + Enter / 点击➤
+    → event_bus.mini_chat_input_sent.emit(text)
+        → main.py: on_mini_chat_message(text)
+            → 创建 AgentWorker(mini_chat=True, configurable={session_id:"mini-chat"})
+            → AgentWorker.run():
+                → event_bus.mini_chat_thinking_started.emit()
+                    → MiniChatOverlay.show_thinking()
+                    → SpeechBubble.show_thinking() 头顶显示"💭 思考中..."
+                    → WindowManager._on_mini_chat_thinking() → AvatarController 播放思考表情
+                → AgentController.chat_test(text, configurable)
+                → event_bus.mini_chat_reply_received 不在此发射（仅大聊天发射 agent_thinking_finished）
+                → reply_ready.emit(AgentMessage)
+                    → main.py: _on_mini_chat_reply(agent_message)
+                        → event_bus.mini_chat_reply_received.emit(reply_text)
+                            → MiniChatOverlay.show_reply(reply)
+                            → SpeechBubble.show_message(reply) 头顶显示回复
+                            → WindowManager._on_mini_chat_reply() → AvatarController 播放说话动作
+                            → 8秒后自动隐藏
+```
+
+**系统提示自动触发**：AgentController 启动时 `APIConnect()` 返回 `AgentMessage("连接成功了！", "Happy")`，`main.py` 将其保存到 `_startup_message`，在 `manager.run()` 后延迟 800ms 通过 `mini_chat_reply_received` 自动显示在角色头顶气泡。
+
+迷你聊天与大聊天窗口的区别：
+- **大聊天窗口**：通过右键"主页"打开，消息记录在 `ChatWindow` 历史中，使用 `user_message_sent` / `agent_reply_received` 信号。
+- **迷你聊天**：通过角色右下角 💬 按钮触发，回复在角色头顶气泡显示，使用 `mini_chat_input_sent` / `mini_chat_reply_received` 信号。
+- **会话隔离**：迷你聊天使用固定 `session_id="mini-chat"`，大聊天窗口每个会话有独立 `session_id`，两者互不影响。
+- **信号隔离**：`AgentWorker.run()` 中 `agent_thinking_finished` 仅在大聊天模式下发射，迷你聊天模式不会污染 ChatWindow 状态。
+
 ### 2.4 当前 EventBus 信号分类
 
 | 分类 | 信号 | 说明 |
@@ -126,9 +161,13 @@ FakeAgentWorker.run()
 | | `menu_quit_requested()` | 请求退出 |
 | | `menu_item_triggered(id, payload)` | 通用菜单项触发 |
 | 聊天 | `user_message_sent(text)` | 用户发送消息 |
+| | `chat_session_changed(session_id)` | 聊天窗口切换/新建会话，通知 AgentController 更新 session_id |
 | | `agent_reply_received(event)` | Agent 完整回复 |
 | | `agent_stream_chunk(chunk)` | 流式片段 |
-| | `agent_thinking_started/finished()` | Agent 思考状态 |
+| | `agent_thinking_started/finished()` | Agent 思考状态（仅大聊天模式发射） |
+| 迷你聊天 | `mini_chat_input_sent(text)` | 用户在迷你输入框发送消息 |
+| | `mini_chat_thinking_started()` | 迷你聊天开始思考 |
+| | `mini_chat_reply_received(text)` | 迷你聊天收到回复（角色头顶气泡显示） |
 | 设置 | `setting_changed(key, value)` | 单个设置项变化 |
 | | `settings_batch_changed(values)` | 批量设置变化 |
 | | `settings_save_requested()` | 请求保存设置 |
@@ -170,6 +209,7 @@ FakeAgentWorker.run()
 - `register_hit_area(name, rect)`：注册可点击区域。
 - `shake_avatar()`：触发摇晃动画（委托 AvatarController）。
 - `on_avatar_clicked(pos)`：处理 Avatar 区域点击。
+- `position_changed(pos)`：窗口移动时发射，供 MiniChatOverlay 等跟随窗口监听。
 
 #### `chat_window.py`
 
@@ -180,6 +220,7 @@ FakeAgentWorker.run()
 - 订阅 Agent 事件并更新历史记录。
 - 顶部设置按钮打开设置面板。
 - **管理会话**：新建、切换、删除会话；切换会话时恢复历史消息。
+- **会话隔离**：新建/切换会话时发射 `chat_session_changed(session_id)`，通知 `AgentController` 更新 `session_id`，确保每个会话的 Agent 记忆独立。
 - 消息追加时自动保存到当前会话，并更新会话列表预览。
 
 关键接口：
@@ -187,9 +228,9 @@ FakeAgentWorker.run()
 - `append_user_message(text)` / `append_agent_message(text)`：追加消息（同时保存到会话）。
 - `update_last_agent_message(text)`：流式更新最后一条消息。
 - `set_status(text, color)`：更新顶部状态。
-- `create_new_session()`：新建会话。
-- `switch_session(session_id)`：切换会话。
-- `_on_session_clicked(session_id)`：会话被点击时恢复消息历史。
+- `create_new_session()`：新建会话，发射 `chat_session_changed(session_id)`。
+- `switch_session(session_id)`：切换会话，发射 `chat_session_changed(session_id)`。
+- `_on_session_clicked(session_id)`：会话被点击时发射 `chat_session_changed` + 恢复消息历史。
 - `_on_session_deleted(session_id)`：删除会话。
 - `_save_message_to_session(role, content)`：内部方法，保存消息到当前会话。
 
@@ -212,17 +253,44 @@ FakeAgentWorker.run()
 
 **窗口管理器**。
 
-- 创建并持有 `LoverWindow`、`ChatWindow`、`SettingWindow`。
+- 创建并持有 `LoverWindow`、`ChatWindow`、`SettingWindow`、`MiniChatOverlay`。
 - 订阅 EventBus，把事件路由到对应窗口。
 - 注入 AvatarController 及其渲染控件。
 - 管理窗口联动（如打开设置时定位在聊天窗旁边）。
 
 关键接口：
 
-- `run()`：显示悬浮窗。
+- `run()`：显示悬浮窗 + 迷你聊天浮层。
 - `quit()`：退出应用。
 - `set_avatar_controller(controller)`：注入 AvatarController。
 - `show_chat()` / `show_settings()`：显示二级窗口。
+- `mini_chat_overlay`：返回迷你聊天浮层实例。
+
+#### `mini_chat_overlay.py`
+
+**迷你聊天浮层** `MiniChatOverlay`（快速对话入口）。
+
+- 无边框、透明、置顶浮动窗口，始终在角色右下角显示一个 💬 按钮。
+- 点击 💬 展开输入框 + 发送按钮 + 关闭按钮。
+- 用户输入消息发送后，通过 `mini_chat_input_sent` 事件广播。
+- 监听 `mini_chat_thinking_started` / `mini_chat_reply_received`，
+  在角色上方显示 `SpeechBubble` 对话气泡。
+- 跟踪 `LoverWindow.position_changed` 信号，角色拖动时自动跟随。
+- **z-order 修复**：拖拽后 LoverWindow 会被 Qt raise 到最上层，`_on_target_moved` 中调用 `self.raise_()` 确保浮层不被遮挡。
+
+设计说明：
+- 迷你聊天不需要打开大聊天窗口（`ChatWindow`），是独立的轻量对话入口。
+- 收起状态：仅显示圆形 💬 按钮（56×56），位于角色右下角部分重叠。
+- 展开状态：输入框 + 发送 + 关闭（320×52），位于角色右下方右对齐。
+- 发送时禁用输入，思考时角色头顶气泡显示"💭 思考中..."动画。
+- 回复显示后 8 秒自动隐藏气泡。
+
+关键接口：
+- `set_target_window(window)`：设置跟踪的目标窗口（LoverWindow），连接 `position_changed` 信号。
+- `expand()` / `collapse()`：展开 / 收起输入框。
+- `show_reply(text)`：显示回复气泡，恢复输入。
+- `show_thinking()`：显示思考气泡，禁用输入。
+- `hide_bubble()`：隐藏气泡。
 
 #### `avatar/avatar_controller_protocol.py`
 
@@ -361,6 +429,28 @@ FakeAgentWorker.run()
 - 卡通风：粉色边框、聚焦时粉色加粗边框、发送按钮粉色三态色（hover/pressed/disabled）。
 - 点击发送时发射 `send_clicked(text)`。
 
+#### `mini_chat/speech_bubble.py`
+
+**角色头顶对话气泡** `SpeechBubble`。
+
+职责：
+- 在角色上方显示对话内容或"思考中"状态。
+- 卡通游戏风：圆角矩形 + 底部三角尾巴指向角色（paintEvent 自绘）。
+- 白底粉色边框，自动根据文本长度调整宽高。
+- 支持"思考中"省略号动画（每 400ms 循环 `.`/`..`/`...`）。
+- 支持自动隐藏（默认 8 秒）。
+
+关键接口：
+- `show_message(text)`：显示对话内容，并启动自动隐藏定时器。
+- `show_thinking()`：显示"💭 思考中..."动画状态。
+- `hide_bubble()`：立即隐藏气泡。
+- `set_auto_hide(seconds)`：设置自动隐藏秒数，0 表示不自动隐藏。
+
+绘制说明：
+- `paintEvent` 使用 `QPainterPath` 绘制圆角矩形 + 底部三角尾巴。
+- 主体区域高度 = 窗口高度 - 尾巴高度。
+- 尾巴位于底部中央，指向下方的角色。
+
 #### `settings/setting_panel.py`
 
 设置项列表面板。
@@ -390,6 +480,84 @@ FakeAgentWorker.run()
 #### `agent_event.py`
 
 `AgentEvent` 数据类，统一 Agent 相关事件的载荷格式。
+
+### 3.4 main.py（应用主入口）
+
+`main.py` 是桌面助手的**真正入口**（`demos/desktop_ui_demo.py` 仅为 UI 原型演示）。
+
+职责：
+- 初始化 `QApplication` 与 `WindowManager`。
+- 注入 `Live2DController` 作为 AvatarController。
+- 初始化 `AgentController` 并连接 LLM（Ollama）。
+- 监听用户消息，通过 `AgentWorker` 线程调用 `AgentController.chat()` / `chat_test()`。
+- **管理会话**：监听 `chat_session_changed`，更新 AgentController 的 `session_id`。
+- **迷你聊天**：监听 `mini_chat_input_sent`，通过 `AgentWorker(mini_chat=True)` 调用 Agent，回复通过 `mini_chat_reply_received` 显示在角色头顶气泡。
+- **系统提示**：AgentController 启动时 `APIConnect()` 返回的消息（如"连接成功了！"）延迟 800ms 自动显示在迷你聊天气泡。
+
+#### `AgentWorker`（QThread）
+
+`main.py` 中定义的工作线程，封装 `AgentController.chat()` 的同步调用。
+
+设计说明：
+- `AgentController.chat()` 内部调用 LangGraph invoke，是同步阻塞的，不能在主线程调用。
+- 通过 `QThread` 在后台执行，完成后通过 `reply_ready` 信号把 `AgentMessage` 发回主线程。
+- `mini_chat` 参数控制思考信号路由：
+  - `mini_chat=True` → 发射 `mini_chat_thinking_started`（角色头顶气泡）。
+  - `mini_chat=False` → 发射 `agent_thinking_started`（大聊天窗口）。
+- `agent_thinking_finished` **仅在大聊天模式**发射，避免迷你聊天污染 ChatWindow 状态。
+- `configurable` 参数允许为不同会话指定不同的 `session_id`。
+
+关键接口：
+- `__init__(agent_controller, user_text, mini_chat=False, configurable=None)`：初始化工作线程。
+- `run()`：执行 `chat_test()` 调用，发射思考信号与 `reply_ready`。
+- `reply_ready(AgentMessage)`：chat() 完成后发射，携带回复结果。
+
+#### 会话管理架构
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                    AgentController                          │
+│  configurable = {"user_id": "default-user",                │
+│                  "session_id": "a1b2c3d4"}  ← 当前会话      │
+└─────────────────────────────────────────────────────────────┘
+        ▲                          ▲
+        │ chat(text, configurable) │ chat(text, configurable=
+        │                          │   {session_id:"mini-chat"})
+        │                          │
+┌───────┴──────────┐    ┌─────────┴──────────┐
+│  AgentWorker     │    │  AgentWorker        │
+│  (大聊天模式)     │    │  (mini_chat=True)   │
+│  session_id 由   │    │  session_id 固定为   │
+│  ChatWindow 管理  │    │  "mini-chat"        │
+└──────────────────┘    └────────────────────┘
+        ▲                          ▲
+        │ user_message_sent        │ mini_chat_input_sent
+        │                          │
+┌───────┴──────────┐    ┌─────────┴──────────┐
+│  ChatWindow       │    │  MiniChatOverlay   │
+│  新建/切换会话时   │    │  (角色右下角💬按钮)  │
+│  emit             │    │                    │
+│  chat_session_    │    │                    │
+│  changed(s_id)    │    │                    │
+└──────────────────┘    └────────────────────┘
+```
+
+会话隔离规则：
+1. **大聊天窗口**：每个会话有独立的 UUID `session_id`，新建/切换时通过 `chat_session_changed` 信号通知 `main.py` 更新 `AgentController.configurable["session_id"]`。
+2. **迷你聊天**：使用固定 `session_id="mini-chat"`，在 `AgentWorker.__init__` 中传入 `configurable={"session_id": "mini-chat"}`，不修改全局 `AgentController.configurable`。
+3. **系统提示**：`init_agent_controller()` 中 `APIConnect()` 返回的消息保存到 `_startup_message`，`manager.run()` 后通过 `QTimer.singleShot(800, ...)` 延迟发射 `mini_chat_reply_received`。
+
+`main.py` 中的关键函数：
+
+| 函数 | 职责 |
+|------|------|
+| `on_user_message(text)` | 大聊天消息处理：创建 `AgentWorker`，回复走 `agent_reply_received` |
+| `on_mini_chat_message(text)` | 迷你聊天消息处理：创建 `AgentWorker(mini_chat=True, configurable={session_id:"mini-chat"})`，回复走 `mini_chat_reply_received` |
+| `_on_agent_reply(agent_message)` | 大聊天回复：包装为 `AgentEvent`，发射 `agent_reply_received` + 状态栏更新 |
+| `_on_mini_chat_reply(agent_message)` | 迷你聊天回复：提取文本，发射 `mini_chat_reply_received` |
+| `on_chat_session_changed(session_id)` | 会话切换：更新 `AgentController.configurable["session_id"]` |
+| `init_agent_controller()` | 初始化 AgentController + 连接 LLM，保存系统提示到 `_startup_message` |
+| `main()` | 入口：创建 WindowManager + AvatarController + AgentController，连接事件，延迟显示系统提示 |
 
 ---
 
@@ -629,6 +797,67 @@ event_bus.model_switch_requested.emit("rem")
 event_bus.model_switch_requested.connect(self._on_model_switch)
 ```
 
+### 4.6 新增一个聊天会话（session_id 隔离）
+
+以新增一个"语音对话"会话为例，说明会话隔离机制。
+
+#### 第一步：确定 session_id
+
+每个会话需要唯一的 `session_id`。可以是 UUID 或固定名称：
+
+```python
+# 固定名称（类似迷你聊天的 "mini-chat"）
+session_id = "voice-chat"
+
+# 或动态 UUID（类似 ChatWindow 的新建会话）
+import uuid
+session_id = uuid.uuid4().hex[:8]
+```
+
+#### 第二步：在发送消息时传入 configurable
+
+在 `main.py` 中创建 `AgentWorker` 时，传入 `configurable` 指定 `session_id`：
+
+```python
+worker = AgentWorker(
+    _agent_controller,
+    text,
+    mini_chat=True,  # 或自定义模式
+    configurable={
+        "user_id": "default-user",
+        "session_id": "voice-chat",
+    },
+)
+```
+
+这样 `AgentController.chat()` 会使用指定的 `session_id`，与其他会话的记忆隔离。
+
+#### 第三步：（可选）如果会话由 UI 窗口管理
+
+如果新会话由某个窗口（类似 ChatWindow）管理切换，需要：
+
+1. 在 `core/event_bus.py` 中复用 `chat_session_changed` 信号或新增信号：
+
+```python
+voice_chat_session_changed = Signal(str)
+```
+
+2. 在窗口中切换会话时发射信号：
+
+```python
+event_bus.voice_chat_session_changed.emit(session_id)
+```
+
+3. 在 `main.py` 中监听并更新 `AgentController`：
+
+```python
+event_bus.voice_chat_session_changed.connect(on_voice_chat_session_changed)
+
+def on_voice_chat_session_changed(session_id: str) -> None:
+    if _agent_controller is not None:
+        _agent_controller.configurable["session_id"] = session_id
+```
+
 ---
 
 ## 5. 以"退出"为例说明完整扩展流程
@@ -751,4 +980,10 @@ def quit(self) -> None:
 | 新增设置项实例 | `windows/setting_window.py` |
 | 新增全局事件 | `core/event_bus.py` |
 | 调整 Avatar 交互 | `avatar/avatar_controller_protocol.py`、`avatar/controller.py`（具体 `AvatarController` 实现） |
-| 运行演示 | `demos/desktop_ui_demo.py` |
+| 迷你聊天（快速对话） | `windows/mini_chat_overlay.py`、`widgets/mini_chat/speech_bubble.py`、`core/event_bus.py`、`main.py` |
+| 会话管理（session_id 隔离） | `windows/chat_window.py`（emit `chat_session_changed`）、`core/event_bus.py`（信号）、`main.py`（`on_chat_session_changed` 更新 AgentController） |
+| AgentWorker 思考信号路由 | `main.py`（`AgentWorker.__init__` 的 `mini_chat` 参数 + `run()` 中条件发射） |
+| 系统提示自动显示 | `main.py`（`init_agent_controller` 保存 `_startup_message` + `main()` 中 `QTimer.singleShot` 延迟发射） |
+| 浮层 z-order 跟随 | `windows/mini_chat_overlay.py`（`_on_target_moved` 中 `self.raise_()`） |
+| 运行真实应用 | `main.py` |
+| 运行 UI 原型演示 | `demos/desktop_ui_demo.py` |
