@@ -39,7 +39,7 @@ from avatar.avatar_controller_protocol import AvatarControllerProtocol
 from avatar.live2d import Live2D
 
 
-class Live2DController:
+class Live2DController (AvatarControllerProtocol):
     """基于 live2d-py 的 AvatarController。
 
     实现 AvatarControllerProtocol，内部持有 Live2D。

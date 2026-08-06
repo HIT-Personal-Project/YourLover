@@ -23,6 +23,8 @@ from windows.lover_window import LoverWindow
 from windows.mini_chat_overlay import MiniChatOverlay
 from windows.setting_window import SettingWindow
 
+import sys
+
 
 class WindowManager:
     """桌面窗口管理器。
@@ -73,7 +75,7 @@ class WindowManager:
         event_bus.hide_all_secondary_windows_requested.connect(
             self.hide_secondary_windows
         )
-        event_bus.application_quit_requested.connect(self.quit)
+        event_bus.application_quit_requested.connect(sys.exit)
 
         # 聊天事件：用户发送消息后同步显示到历史记录
         event_bus.user_message_sent.connect(self._chat_window.append_user_message)
@@ -229,7 +231,7 @@ class WindowManager:
         if self._avatar_controller is not None:
             # TODO: 接入真实思考动作/表情，具体名称根据模型而定
             self._avatar_controller.change_expression("thinking")
-            self._avatar_controller.set_state("Thinking")
+            self._on_avatar_state_changed("Thinking")
 
     def _on_mini_chat_reply(self, reply_text: str) -> None:
         """迷你聊天收到回复时，让 Avatar 播放说话动画。

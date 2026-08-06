@@ -32,7 +32,7 @@ from widgets.settings.setting_item import (
     ToggleSettingItem,
 )
 from widgets.settings.setting_panel import SettingPanel
-
+from utils.config_manager import config
 
 class SettingWindow(BaseWindow):
     """设置面板窗口。
@@ -251,6 +251,7 @@ class SettingWindow(BaseWindow):
         values = self.get_all_values()
         self.saved.emit()
         event_bus.settings_save_requested.emit()
+        config.update(values)
         event_bus.settings_batch_changed.emit(values)
         self.hide_window()
 
@@ -368,6 +369,7 @@ class SettingWindow(BaseWindow):
                 extra={"min": 0, "max": 100, "help_text": "TTS 与音效音量"},
             )
         )
+
         self.add_setting_item(
             TextSettingItem(
                 key="api_base",
@@ -375,6 +377,15 @@ class SettingWindow(BaseWindow):
                 default_value="http://localhost:11434",
             )
         )
+
+        self.add_setting_item(
+            TextSettingItem(
+                key="CHAT_MODEL_NAME",
+                label="聊天模型",
+                default_value=config.CHAT_MODEL_NAME,
+            )
+        )
+
         self.add_setting_item(
             TipSettingItem(
                 key="tip",

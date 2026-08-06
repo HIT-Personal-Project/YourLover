@@ -61,7 +61,7 @@ class AgentController:
         status, msg = self._agent_init(LLM_type,LLM_name,url,api_key)
         if status == ConnectState.OK:
             self.is_connected = True
-            return AgentMessage("连接成功了！现在可以开始聊天了！","Happy")
+            return AgentMessage(f"{LLM_name} 连接成功了！现在可以开始聊天了！","Happy")
         else:
             return AgentMessage(msg,"Sad")
             
