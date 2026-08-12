@@ -108,6 +108,9 @@ class AvatarControllerProtocol(Protocol):
             expression_name: 表情名称，如 "happy", "sad", "surprised"。
         """
         ...
+    
+    def clear_expression(self) -> None:
+        ...
 
     def set_state(self, state_name: str) -> None:
         """设置 Avatar 状态。

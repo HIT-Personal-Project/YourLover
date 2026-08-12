@@ -32,6 +32,7 @@ from utils.config_manager import config
 from avatar.controller import Live2DController
 
 
+
 # ============================================================
 # Agent 工作线程
 # ============================================================
@@ -96,12 +97,16 @@ class AgentWorker(QThread):
             if not self._mini_chat:
                 event_bus.agent_thinking_finished.emit()
             self.reply_ready.emit(result)
+        
         except Exception as exc:
             if not self._mini_chat:
                 event_bus.agent_thinking_finished.emit()
             traceback.print_exc()
             # 异常时返回错误提示，不让 UI 卡在"思考中"
             self.reply_ready.emit(AgentMessage(f"出错了：{exc}", "Sad"))
+
+        finally:
+            event_bus.avatar_expression_clear.emit()
 
 
 # ============================================================
@@ -222,6 +227,9 @@ class App:
 
         event_bus.settings_batch_changed.connect(self._on_config_update)
 
+        # 2D模型管理
+        event_bus.avatar_expression_clear.connect(self._avatar_controller.clear_expression)
+
 
     # ============================================================
     # 大聊天消息处理
@@ -328,7 +336,10 @@ class App:
             or getattr(agent_message, "message", None)
             or str(agent_message)
         )
+        
         event_bus.mini_chat_reply_received.emit(str(content))
+        emotion = getattr(agent_message, "ai_emo", "Happy")
+        self._avatar_controller.speak(emotion)
 
     def _on_chat_session_changed(self, session_id: str) -> None:
         """聊天窗口切换/新建会话时，更新 AgentController 的 session_id。
@@ -382,6 +393,7 @@ class App:
         
         del self._avatar_controller
         self._avatar_controller = Live2DController(config)
+        
         self._window_manager.set_avatar_controller(self._avatar_controller)
 
         # 注册示例 HitArea（根据窗口尺寸划分头部和身体）

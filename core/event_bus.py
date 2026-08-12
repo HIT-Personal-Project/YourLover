@@ -53,11 +53,14 @@ class EventBus(QObject):
     # 无参数，表示检测到摇晃手势
     avatar_shaken = Signal()
 
-    # Avatar 状态变化，参数：状态名（如 "Idle", "Thinking", "Speaking"）
+    # Avatar 状态变化，参数：状态名（如 "Happy", "Thinking", "Speaking"，“Angry”）
     avatar_state_changed = Signal(str)
 
-    # Avatar 表情变化，参数：表情名（如 "Happy", "Sad", "Angry"）
-    avatar_expression_changed = Signal(str)
+    # # Avatar 表情变化，参数：表情名（如 "Happy", "Sad", "Angry"）
+    # avatar_expression_changed = Signal(str)
+
+    # 表情全部恢复初始化
+    avatar_expression_clear = Signal()
     
 
     # ============================================================

@@ -8,6 +8,7 @@ class EmotionEnum(Enum):
     Happy = "Happy"
     Sad = "Sad"
     Angry = "Angry"
+    Shy = "Shy"
 
 
 class ActionEnum(Enum):
@@ -18,5 +19,6 @@ class ActionEnum(Enum):
     Speaking = "Speaking"
     Happy = "Happy"
     Sad = "Sad"
+    Shy = "Shy"
     ToolUsing = "ToolUsing"
     Sleep = "Sleep"

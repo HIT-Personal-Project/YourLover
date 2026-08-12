@@ -239,11 +239,10 @@ class WindowManager:
         Args:
             reply_text: 回复文本（气泡显示由 MiniChatOverlay 处理）。
         """
-        if self._avatar_controller is not None:
-            # TODO: 接入真实说话动作/表情
-            self._avatar_controller.play_motion("Tap")
-            self._avatar_controller.change_expression("happy")
-            self._avatar_controller.set_state("Speaking")
+        self._on_avatar_state_changed("Idle")
+
+        ### 已交付给app.py实现剩余功能
+
 
     # ============================================================
     # 属性访问
