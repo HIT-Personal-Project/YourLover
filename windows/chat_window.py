@@ -18,15 +18,17 @@
 """
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QVBoxLayout,
     QWidget,
 )
 
+from agent.memory.session_store import SessionRecord, SessionStore, SessionStoreError
 from core.agent_event import AgentEvent
 from core.event_bus import event_bus
 from windows.base_window import BaseWindow
@@ -64,8 +66,13 @@ class ChatWindow(BaseWindow):
             parent: 父级窗口，通常为空或 LoverWindow。
         """
         self._current_agent_bubble = None
-        self._sessions: dict[str, dict] = {}  # session_id -> {"messages": [...]}
+        self._user_id = "default-user"  # 当前界面所属用户，与 Agent 默认用户保持一致
+        self._session_store = SessionStore()  # 负责读取和维护已持久化的短期会话
+        self._sessions: dict[str, dict] = {}  # 保存各 session 的界面消息缓存
         super().__init__(parent)
+
+        # 等 App 完成事件绑定后，再把初始 session_id 同步给 AgentController。
+        QTimer.singleShot(0, self._activate_current_session)
 
     def _setup_window_flags(self) -> None:
         """配置聊天窗口标志：标准窗口，可最小化/关闭。"""
@@ -111,8 +118,9 @@ class ChatWindow(BaseWindow):
 
         self.apply_style()
 
-        # 默认创建一个会话
-        self.create_new_session()
+        # 优先恢复历史会话；没有历史记录时再创建一个新会话。
+        if not self._restore_persisted_sessions():
+            self.create_new_session()
 
     def connect_signals(self) -> None:
         """连接组件信号与 EventBus。"""
@@ -157,6 +165,114 @@ class ChatWindow(BaseWindow):
     # 会话管理接口
     # ============================================================
 
+    def _restore_persisted_sessions(self) -> bool:
+        """读取并展示历史 Session，逻辑是按最近更新时间恢复列表和消息。"""
+        try:
+            records = [
+                record
+                for record in self._session_store.list_sessions(self._user_id)
+                if record.session_id != "mini-chat"
+            ]
+            restored_sessions = [
+                (record, self._load_display_messages(record.session_id))
+                for record in records
+            ]
+            for record, messages in restored_sessions:
+                self._sessions[record.session_id] = {"messages": messages}
+                self._session_list.add_session(
+                    SessionData(
+                        session_id=record.session_id,
+                        title=self._session_title(record, messages),
+                        preview=self._session_preview(record, messages),
+                        updated_at=self._parse_datetime(record.updated_at),
+                        avatar="🌸",
+                    )
+                )
+        except SessionStoreError as exc:
+            print(f"[chat_window] 读取历史会话失败: {exc}")
+            return False
+
+        if not records:
+            return False
+
+        # list_sessions 已按新到旧排序，因此启动时默认选中最近会话。
+        self._session_list.select_session(records[0].session_id)
+        return True
+
+    def _load_display_messages(
+        self,
+        session_id: str,
+    ) -> list[tuple[MessageRole, str]]:
+        """读取一个 Session 的可见消息，只恢复正常的用户和助手对话。"""
+        messages: list[tuple[MessageRole, str]] = []
+        for item in self._session_store.load_memory_items(self._user_id, session_id):
+            if item.type != "Chat":
+                continue
+            role = self._display_role(item.speaker)
+            content = self._message_content(item.message.content)
+            if role is not None and content:
+                messages.append((role, content))
+        return messages
+
+    @staticmethod
+    def _display_role(speaker: str) -> MessageRole | None:
+        """把 MemoryItem 的说话者转换为聊天气泡角色。"""
+        normalized = speaker.strip().lower()
+        if normalized in {"user", "human"}:
+            return MessageRole.USER
+        if normalized in {"ai", "assistant"}:
+            return MessageRole.AGENT
+        return None
+
+    @staticmethod
+    def _message_content(content: Any) -> str:
+        """把持久化消息内容转换为界面可展示的文本。"""
+        if isinstance(content, str):
+            return content.strip()
+        return str(content).strip() if content is not None else ""
+
+    @staticmethod
+    def _session_title(
+        record: SessionRecord,
+        messages: list[tuple[MessageRole, str]],
+    ) -> str:
+        """生成会话标题，优先使用数据库标题，再使用首条用户消息。"""
+        if record.title.strip():
+            return record.title
+        first_user_message = next(
+            (content for role, content in messages if role == MessageRole.USER),
+            "",
+        )
+        return ChatWindow._short_text(first_user_message, 12) or "新对话"
+
+    @staticmethod
+    def _session_preview(
+        record: SessionRecord,
+        messages: list[tuple[MessageRole, str]],
+    ) -> str:
+        """生成会话预览，优先展示最后一条消息，其次展示摘要。"""
+        source = messages[-1][1] if messages else record.summary
+        return ChatWindow._short_text(source, 20) or "点击开始聊天~"
+
+    @staticmethod
+    def _short_text(content: str, limit: int) -> str:
+        """截取列表中的标题或预览文本，并在超长时添加省略号。"""
+        return content[:limit] + ("..." if len(content) > limit else "")
+
+    @staticmethod
+    def _parse_datetime(value: str) -> datetime:
+        """解析数据库时间；旧数据格式异常时使用当前时间。"""
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return datetime.now()
+
+    def _activate_current_session(self) -> None:
+        """启动后恢复当前会话内容，并把 session_id 同步给 AgentController。"""
+        session_id = self._session_list.current_session_id()
+        if session_id is not None:
+            self._on_session_clicked(session_id)
+
     def create_new_session(self) -> None:
         """新建一个会话并添加到列表中。
 
@@ -171,6 +287,7 @@ class ChatWindow(BaseWindow):
             preview="点击开始聊天~",
             avatar="🌸",
         )
+        self._session_store.create_session(self._user_id, session_id, data.title)
         self._sessions[session_id] = {"messages": []}
         self._session_list.add_session(data)
         # 通知 AgentController 切换到新会话
@@ -207,11 +324,17 @@ class ChatWindow(BaseWindow):
                 self._current_agent_bubble = None  # 历史消息不参与流式更新
 
     def _on_session_deleted(self, session_id: str) -> None:
-        """会话被删除。
+        """删除会话，逻辑是先删除数据库记录，再移除界面缓存。
 
         Args:
             session_id: 被删除的会话 ID。
         """
+        try:
+            self._session_store.delete_session(self._user_id, session_id)
+        except SessionStoreError as exc:
+            print(f"[chat_window] 删除历史会话失败: {exc}")
+            return
+
         self._sessions.pop(session_id, None)
         self._session_list.remove_session(session_id)
 
@@ -230,30 +353,44 @@ class ChatWindow(BaseWindow):
         session_id = self._session_list.current_session_id()
         if session_id is None:
             return
+
+        # 每次发送前再次同步，避免迷你聊天使用的固定 session_id 影响大窗口。
+        if role == MessageRole.USER:
+            event_bus.chat_session_changed.emit(session_id)
+
         session = self._sessions.setdefault(session_id, {"messages": []})
         session["messages"].append((role, content))
 
-        # 更新会话列表的预览
+        # 更新会话列表的标题和预览；消息正文由 ChatAgent 统一持久化。
         if role == MessageRole.USER:
-            preview = content[:20] + ("..." if len(content) > 20 else "")
-            self._session_list.update_session(
-                SessionData(
-                    session_id=session_id,
-                    title=content[:12] + ("..." if len(content) > 12 else ""),
-                    preview=preview,
-                    avatar="🌸",
-                )
+            title = self._short_text(content, 12)
+            preview = self._short_text(content, 20)
+            data = SessionData(
+                session_id=session_id,
+                title=title,
+                preview=preview,
+                avatar="🌸",
             )
         else:
-            preview = content[:20] + ("..." if len(content) > 20 else "")
-            self._session_list.update_session(
-                SessionData(
-                    session_id=session_id,
-                    title=session["messages"][0][1][:12] + ("..." if len(session["messages"][0][1]) > 12 else "") if session["messages"] else "新对话",
-                    preview=preview,
-                    avatar="🌸",
-                )
+            title_source = session["messages"][0][1] if session["messages"] else ""
+            title = self._short_text(title_source, 12) or "新对话"
+            preview = self._short_text(content, 20)
+            data = SessionData(
+                session_id=session_id,
+                title=title,
+                preview=preview,
+                avatar="🌸",
             )
+
+        self._session_list.update_session(data)
+        try:
+            self._session_store.update_session_title(
+                self._user_id,
+                session_id,
+                data.title,
+            )
+        except SessionStoreError as exc:
+            print(f"[chat_window] 更新会话标题失败: {exc}")
 
     # ============================================================
     # 消息操作接口

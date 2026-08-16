@@ -32,6 +32,7 @@ from agent.memory.EmotionMemory import EmotionState
 from agent.memory.MemoryItem import MemoryItem
 from agent.memory.retriever import MemoryRetriever
 from agent.memory.schema import MemoryType, SemanticMemory
+from agent.memory.session_store import SessionStore
 from agent.memory.store import FileMemoryStore
 from agent.memory.window import select_messages_for_memory_write, trim_messages
 from agent.tools import tool_map
@@ -58,6 +59,7 @@ class ChatAgent:
         memory_store: FileMemoryStore | None = None,
         memory_retriever: MemoryRetriever | None = None,
         memory_classifier: MemoryClassifier | None = None,
+        session_store: SessionStore | None = None,
         affinity_service: AffinityService | None = None,
         max_messages: int = 20,
         keep_recent_turns: int = 6,
@@ -71,6 +73,7 @@ class ChatAgent:
             memory_store: 长期记忆存储，未提供则用默认 FileMemoryStore
             memory_retriever: 记忆检索器，未提供则基于 memory_store 创建
             memory_classifier: 记忆分类器，未提供则用默认 MemoryClassifier
+            session_store: 短期 Session 存储，未提供则使用默认 SQLite 存储
             affinity_service: 好感度服务，未提供则用默认 AffinityService
             max_messages: 短期窗口消息上限，必须 >=1
             keep_recent_turns: 裁剪时保留的最近对话轮次数，必须 >=0
@@ -89,6 +92,12 @@ class ChatAgent:
         self.memory_store = memory_store or FileMemoryStore()
         self.memory_retriever = memory_retriever or MemoryRetriever(self.memory_store)
         self.memory_classifier = memory_classifier or MemoryClassifier()
+        # 测试传入临时长期存储时，把 Session 数据库也放入临时目录。
+        self.session_store = session_store or (
+            SessionStore(memory_store.root_dir / "sessions.sqlite3")
+            if memory_store is not None
+            else SessionStore()
+        )
         self.affinity_service = affinity_service or AffinityService()
         self.max_messages = max_messages
         self.keep_recent_turns = keep_recent_turns
@@ -240,24 +249,93 @@ class ChatAgent:
         return {"memory_context": self.memory_retriever.format_memory_context(recalled)}
 
     def _load_short_term_memory(self, state: EmotionState) -> dict[str, Any]:
-        """加载短期记忆：从会话历史中提取全部短期记忆，仅在 session_id 切换时加载。
+        """加载短期记忆：恢复 Session 摘要和最近消息。
 
-        作为加载链路的最后一站，把 self.session_id 标记为当前 session_id，
-        使后续轮次在 _route_on_session 中跳过加载链路。
-        TODO: 短期记忆加载逻辑待实现。
+        逻辑：若 LangGraph 已恢复当前线程状态则不重复加载；否则从 SQLite
+        读取最近消息，恢复为 messages 和 MemoryItem history。
         """
-        self.session_id = state["session_id"]
-        return {}
+        user_id = state["user_id"]
+        session_id = state["session_id"]
+        self.session_id = session_id
+
+        # 切回进程内已有的 LangGraph 线程时，checkpoint 已经包含短期状态。
+        if state.get("messages") or state.get("session_summary"):
+            return {}
+
+        snapshot = self.session_store.load_session(
+            user_id,
+            session_id,
+            recent_limit=self.max_messages,
+        )
+        if snapshot is None:
+            self.session_store.create_session(user_id, session_id)
+            return {}
+
+        history = [record.item for record in snapshot.items]
+        return {
+            "messages": [item.message for item in history],
+            "history": history,
+            "session_summary": snapshot.session.summary,
+        }
     
     def _save_short_term_memory(self, state: EmotionState) -> dict[str, Any]:
-        """保存短期记忆：将当前会话历史保存到记忆数据库或磁盘本地
-        还不清楚什么时候触发调用逻辑，目前的想法是根据session判断。
-        例如，每次会话结束时调用一次，或者在用户请求时调用一次。
-        目前还什么都没写----
-        """
+        """保存短期记忆：持久化本轮新增事件并同步 Session 摘要。
 
-        return {        
-        }
+        逻辑：从 history 中找到本轮最后一条用户输入，只保存它及其后的
+        AI/工具事件；消息 ID 缺失时用时间戳生成稳定事件 ID，避免重复写入。
+        """
+        user_id = state["user_id"]
+        session_id = state["session_id"]
+        history = list(state.get("history") or [])
+        user_input = state.get("user_input", "")
+
+        # 从后向前定位本轮用户事件，避免重复保存之前的 history。
+        turn_start = next(
+            (
+                index
+                for index in range(len(history) - 1, -1, -1)
+                if history[index].speaker.lower() == "user"
+                and getattr(history[index].message, "content", None) == user_input
+            ),
+            None,
+        )
+        turn_items = history[turn_start:] if turn_start is not None else []
+
+        if turn_items:
+            event_ids = [
+                str(getattr(item.message, "id", None))
+                if getattr(item.message, "id", None)
+                else f"{session_id}:{item.speak_time!r}:{index}"
+                for index, item in enumerate(turn_items)
+            ]
+            self.session_store.save_memory_items(
+                user_id,
+                session_id,
+                turn_items,
+                event_ids=event_ids,
+            )
+        else:
+            self.session_store.create_session(user_id, session_id)
+
+        session = self.session_store.get_session(user_id, session_id)
+        summary = state.get("session_summary") or ""
+        if session is not None and summary != session.summary:
+            records = self.session_store.load_memory_item_records(user_id, session_id)
+            retained_count = len(state.get("messages") or [])
+            removed_count = max(0, len(records) - retained_count)
+            summarized_through = session.summarized_through_sequence
+            if removed_count:
+                summarized_through = max(
+                    summarized_through,
+                    records[removed_count - 1].sequence_no,
+                )
+            self.session_store.update_session_summary(
+                user_id,
+                session_id,
+                summary,
+                summarized_through,
+            )
+        return {}
 
 
     def _user_input(self, state: EmotionState) -> dict[str, Any]:
