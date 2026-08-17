@@ -170,7 +170,8 @@ class Live2DController (AvatarControllerProtocol):
         # TODO: 接入状态机
         print(f"[Live2DAvatarController] 设置状态: {state_name}")
         self._render_widget.state = state_name
-        if state_name == "Thiking":
-            self.change_expression(state_name)
+        if state_name == "Happy":
+            self.clear_expression()
+        self.change_expression(state_name)
 
     

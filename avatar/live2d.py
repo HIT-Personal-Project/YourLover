@@ -38,7 +38,7 @@ class Live2D(QOpenGLWidget):
         self._idle_check_interval_ms: int = 10000    # Idle 检测间隔（毫秒）
         self._init_ok: bool = False
 
-        self.state = "Idle"
+        self.state = "Happy"
 
         # 配置 OpenGL 表面格式（带 alpha 通道，用于透明背景）
         fmt = QSurfaceFormat()
@@ -137,7 +137,7 @@ class Live2D(QOpenGLWidget):
         if not self.model:
             return
         try:
-            if self.model.IsMotionFinished() and self.state=="Idle":
+            if self.model.IsMotionFinished() and self.state=="Happy":
                 self.model.StartRandomMotion("Idle", live2d.MotionPriority.IDLE)
         except Exception as e:
             print(f"[Live2DAvatarWidget] Idle 检测异常: {e}")

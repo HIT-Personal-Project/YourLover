@@ -11,7 +11,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Optional, Dict
 
-from langchain_core.messages import BaseMessage
+# from langchain_core.messages import BaseMessage
 
 
 @dataclass
@@ -38,7 +38,7 @@ class MemoryItem:
     """判断记忆类型是不是对话记忆，如果是思考或者工具调用的记忆需要特殊处理。 (Chat, Think, ToolCall)"""
     speaker: str
     """System, AI 或者 User"""
-    message: BaseMessage
+    message: str
     """Langchain的消息对象。"""
     love: int = 0
     """好感度，默认0"""

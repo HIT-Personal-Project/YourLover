@@ -94,7 +94,6 @@ class WindowManager:
 
         # 迷你聊天事件：思考时让 Avatar 播放思考动画，回复时播放说话动画
         event_bus.mini_chat_thinking_started.connect(self._on_mini_chat_thinking)
-        event_bus.mini_chat_reply_received.connect(self._on_mini_chat_reply)
 
     # ============================================================
     # 公共接口
@@ -233,15 +232,6 @@ class WindowManager:
             self._avatar_controller.change_expression("thinking")
             self._on_avatar_state_changed("Thinking")
 
-    def _on_mini_chat_reply(self, reply_text: str) -> None:
-        """迷你聊天收到回复时，让 Avatar 播放说话动画。
-
-        Args:
-            reply_text: 回复文本（气泡显示由 MiniChatOverlay 处理）。
-        """
-        self._on_avatar_state_changed("Idle")
-
-        ### 已交付给app.py实现剩余功能
 
 
     # ============================================================

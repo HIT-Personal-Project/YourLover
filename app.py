@@ -272,16 +272,18 @@ class App:
             or getattr(agent_message, "message", None)
             or str(agent_message)
         )
-        emotion = getattr(agent_message, "ai_emo", None)
+        emotion = getattr(agent_message, "ai_emo", "Happy")
+        love = getattr(love,"love",100)
 
         event = AgentEvent(
             type="reply",
-            payload={"content": str(content), "emotion": emotion},
+            payload={"content": str(content), "emotion": emotion, "love":love},
         )
 
+    
         event_bus.agent_reply_received.emit(event)
         event_bus.state_emotion_change.emit(emotion)
-        event_bus.state_love_change.emit(90)
+        event_bus.state_love_change.emit(love)
 
     def _cleanup_worker(self, worker: AgentWorker) -> None:
         """线程结束后清理引用。
@@ -339,6 +341,8 @@ class App:
         
         event_bus.mini_chat_reply_received.emit(str(content))
         emotion = getattr(agent_message, "ai_emo", "Happy")
+        self._avatar_controller.set_state(emotion)
+        print(f"[app] 虚拟人物当前情绪 {emotion}")
         self._avatar_controller.speak(emotion)
 
     def _on_chat_session_changed(self, session_id: str) -> None:

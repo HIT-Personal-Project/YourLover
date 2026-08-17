@@ -124,8 +124,8 @@ class AgentMessage:
             self.love = source.love
             self.ai_emo = source.ai_emo
             # self.user_emo = source.user_emo
-            self.message = source.message.content
-            self.msg = source.message.content  # 兼容属性访问
+            self.message = source.message
+            self.msg = source.message  # 兼容属性访问
         else:
             # 直接指定文本和情感（用于错误提示、状态通知等）
             self.msg = str(source)
