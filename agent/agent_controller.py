@@ -11,6 +11,7 @@ from agent.memory.MemoryItem import MemoryItem
 
 from typing import overload
 
+from utils.message_filter import extract_emotion
 
 
 # from avatar.avatar_state import EmotionEnum
@@ -119,13 +120,15 @@ class AgentMessage:
         """
         if isinstance(source, MemoryItem):
             # 从 MemoryItem 提取完整元数据
+
             self.type = source.type
             self.speaker = source.speaker
             self.love = source.love
-            self.ai_emo = source.ai_emo
-            # self.user_emo = source.user_emo
-            self.message = source.message
-            self.msg = source.message  # 兼容属性访问
+            self.user_emo = source.user_emo
+            self.message = source.message.content
+            self.msg = source.message.content  # 兼容属性访问
+
+            _, self.ai_emo =  extract_emotion(self.message)
         else:
             # 直接指定文本和情感（用于错误提示、状态通知等）
             self.msg = str(source)

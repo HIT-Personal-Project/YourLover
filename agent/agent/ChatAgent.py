@@ -37,9 +37,6 @@ from agent.memory.store import FileMemoryStore
 from agent.memory.window import select_messages_for_memory_write, trim_messages
 from agent.tools import tool_map
 
-
-from utils.message_filter import extract_emotion
-
 class ChatAgent:
     """情感陪伴 Agent：由 memory 模块各边界组合而成的 LangGraph 代理。
 
@@ -354,7 +351,6 @@ class ChatAgent:
                     speaker="User",
                     message=user_message.content,
                     love=state["love_snapshot"],
-                    ai_emo=None,
                     user_emo=None,
                 )
             ],
@@ -375,14 +371,12 @@ class ChatAgent:
         system_message = SystemMessage(content=self._assemble_system_prompt(state))
         response = self.llm_with_tools.invoke([system_message, *(state.get("messages") or [])])
         result: dict[str, Any] = {"messages": [response]}
-        clean_message ,ai_emotion = extract_emotion(response.content)
         result["history"] = [
             MemoryItem(
                 type="Chat",
                 speaker="AI",
-                message=clean_message,
+                message=response,
                 love=state["love_snapshot"],
-                ai_emo=ai_emotion,
                 user_emo=state.get("user_emo"),
             )
         ]
@@ -438,7 +432,6 @@ class ChatAgent:
                     speaker="AI",
                     message=tool_message.content,
                     love=state["love_snapshot"],
-                    ai_emo=None,
                     user_emo=state.get("user_emo"),
                 )
             )
