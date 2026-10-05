@@ -24,6 +24,7 @@ from PySide6.QtCore import QRect, QThread, Signal, QTimer
 from PySide6.QtWidgets import QApplication
 
 from agent.agent_controller import AgentController, AgentMessage
+from agent.proactive.engine import ProactiveEngine
 from core.agent_event import AgentEvent
 from core.event_bus import event_bus
 from windows.window_manager import WindowManager
@@ -59,6 +60,7 @@ class AgentWorker(QThread):
         user_text: str,
         mini_chat: bool = False,
         configurable: dict | None = None,
+        proactive_instruction: str | None = None,
     ) -> None:
         """初始化工作线程。
 
@@ -68,38 +70,48 @@ class AgentWorker(QThread):
             mini_chat: True 表示迷你聊天模式，思考信号走 mini_chat_thinking_started。
             configurable: 可选的会话配置（含 session_id），用于区分不同会话。
                          None 表示使用 AgentController 默认配置。
+            proactive_instruction: 主动消息隐藏指令；非 None 时本轮走
+                         chat_proactive()（不显示"思考中"，回复照常显示）。
         """
         super().__init__()
         self._agent_controller = agent_controller
         self._user_text = user_text
         self._mini_chat = mini_chat
         self._configurable = configurable
+        self._proactive_instruction = proactive_instruction
 
     def run(self) -> None:
         """执行 chat() 调用。
 
         流程：
-        1. 发射 thinking 信号通知 UI 显示"思考中"。
-        2. 调用 AgentController.chat()。
+        1. 发射 thinking 信号通知 UI 显示"思考中"（主动消息轮跳过）。
+        2. 调用 AgentController.chat() / chat_proactive()。
         3. 仅在大聊天模式下发射 agent_thinking_finished（迷你聊天不走大窗口）。
         4. 通过 reply_ready 把结果发回主线程。
         5. 若 chat() 抛异常，把错误信息包装成 AgentMessage 返回。
         """
-        if self._mini_chat:
-            event_bus.mini_chat_thinking_started.emit()
-        else:
-            event_bus.agent_thinking_started.emit()
+        proactive = self._proactive_instruction is not None
+        if not proactive:  # 主动消息是"她主动发来的"，不显示思考占位
+            if self._mini_chat:
+                event_bus.mini_chat_thinking_started.emit()
+            else:
+                event_bus.agent_thinking_started.emit()
 
         try:
-            result = self._agent_controller.chat(
-                self._user_text, self._configurable
-            )
-            if not self._mini_chat:
+            if proactive:
+                result = self._agent_controller.chat_proactive(
+                    self._proactive_instruction, self._configurable
+                )
+            else:
+                result = self._agent_controller.chat(
+                    self._user_text, self._configurable
+                )
+            if not self._mini_chat and not proactive:
                 event_bus.agent_thinking_finished.emit()
             self.reply_ready.emit(result)
-        
+
         except Exception as exc:
-            if not self._mini_chat:
+            if not self._mini_chat and not proactive:
                 event_bus.agent_thinking_finished.emit()
             traceback.print_exc()
             # 异常时返回错误提示，不让 UI 卡在"思考中"
@@ -163,6 +175,8 @@ class App:
         self._active_workers: set[AgentWorker] = set()
         # AgentController 启动时返回的系统提示（如"连接成功了！"），延迟显示在迷你聊天气泡
         self._startup_message: str | None = None
+        # 主动对话引擎（静默检测 → 主动问候/生气），见 docs/proactive_dialogue_mechanism.md
+        self._proactive_engine: ProactiveEngine | None = None
 
         # 初始化 AgentController 并连接 LLM
         self._init_agent_controller()
@@ -196,12 +210,48 @@ class App:
                 LLM_type="ollama",
                 LLM_name=config.CHAT_MODEL_NAME,
             )
-            self._startup_message = getattr(message, "msg", None) or str(message)
+            self._startup_message = getattr(message, "message", None) or str(message)
             print(f"[app] AgentController 连接结果: {self._startup_message}")
         except Exception as exc:
             self._startup_message = f"连接失败: {exc}"
             print(f"[app] AgentController 连接失败: {exc}")
             traceback.print_exc()
+
+        # 初始化主动对话引擎（连接成功才有效；引擎内部读 PROACTIVE_* 配置）
+        self._init_proactive_engine()
+
+    def _init_proactive_engine(self) -> None:
+        """创建/重建主动对话引擎。
+
+        - 静默计时起点从 SQLite 恢复（用户上次发言时间），支持跨启动的
+          "你没理我"：隔了一夜没聊天，启动后她很快就会来找你；
+        - 生气时引擎直接通过 AffinityService 扣好感度；
+        - 问候/生气信号 → 异步调用 LLM 生成主动消息（走大聊天窗口显示）。
+        """
+        # 重建前先停掉旧引擎（配置热更新路径会走到这里）
+        if self._proactive_engine is not None:
+            self._proactive_engine.stop()
+
+        last_activity = None
+        try:
+            agent = getattr(self._agent_controller, "agent", None)
+            if agent is not None:
+                last_activity = agent.short_term_memory.get_last_user_activity_time(
+                    self._agent_controller.configurable["user_id"]
+                )
+        except Exception as exc:
+            print(f"[app] 读取上次用户活跃时间失败（从当前时间开始计时）: {exc}")
+
+        self._proactive_engine = ProactiveEngine(
+            config,
+            affinity_service=getattr(self._agent_controller, "agent", None)
+            and self._agent_controller.agent.affinity_service,
+            user_id=self._agent_controller.configurable["user_id"],
+            initial_last_activity=last_activity,
+        )
+        self._proactive_engine.checkInRequested.connect(self._on_proactive_check_in)
+        self._proactive_engine.angryRequested.connect(self._on_proactive_angry)
+        self._proactive_engine.start()
 
     # ============================================================
     # EventBus 信号路由
@@ -249,6 +299,10 @@ class App:
             )
             return
 
+        # 用户发言 = 活跃信号：重置主动对话状态机（"哄她"机制的入口）
+        if self._proactive_engine is not None:
+            self._proactive_engine.notify_user_activity()
+
         worker = AgentWorker(self._agent_controller, text)
 
         # chat() 完成后，把 AgentMessage 包装成 AgentEvent 发送
@@ -268,22 +322,24 @@ class App:
         """
         # AgentMessage 有两种构造方式，属性可能不同，做兼容处理
         content = (
-            getattr(agent_message, "msg", None)
-            or getattr(agent_message, "message", None)
+            getattr(agent_message, "message", None)
             or str(agent_message)
         )
         emotion = getattr(agent_message, "ai_emo", "Happy")
-        love = getattr(love,"love",100)
+        # 好感度：MemoryItem 路径携带轮末最新值；错误/提示消息（字符串构造）为 None
+        love = getattr(agent_message, "love", None)
 
         event = AgentEvent(
             type="reply",
             payload={"content": str(content), "emotion": emotion, "love":love},
         )
 
-    
+
         event_bus.agent_reply_received.emit(event)
         event_bus.state_emotion_change.emit(emotion)
-        event_bus.state_love_change.emit(love)
+        # 仅真实聊天回复携带有效好感度（None 为错误/连接提示，不刷新界面）
+        if love is not None:
+            event_bus.state_love_change.emit(love)
 
     def _cleanup_worker(self, worker: AgentWorker) -> None:
         """线程结束后清理引用。
@@ -293,6 +349,42 @@ class App:
         """
         self._active_workers.discard(worker)
         worker.deleteLater()
+
+    # ============================================================
+    # 主动对话（ProactiveEngine → LLM 异步生成主动消息）
+    # ============================================================
+
+    def _on_proactive_check_in(self, instruction: str) -> None:
+        """静默到期：让小爱主动发一条问候（新话题或接着旧话题）。"""
+        self._start_proactive_worker(instruction)
+
+    def _on_proactive_angry(self, instruction: str) -> None:
+        """多次被无视：让小爱发一条生气委屈的消息（好感度已由引擎扣减）。"""
+        self._start_proactive_worker(instruction)
+
+    def _start_proactive_worker(self, instruction: str) -> None:
+        """用 AgentWorker 异步生成主动消息，复用正常回复的显示链路。
+
+        设计说明：
+        - 主动消息发给 AgentController 当前会话（用户正在看的窗口），
+          回复经 _on_agent_reply 正常显示在聊天窗口并切换表情/好感度；
+        - 已有 worker 在跑时跳过本次主动消息（避免并发 invoke 同一
+          LangGraph 线程导致 checkpoint 冲突），下个静默周期会再尝试。
+        """
+        if self._agent_controller is None or not self._agent_controller.is_connected:
+            return
+        if self._active_workers:  # 正在生成回复时不抢跑
+            return
+
+        worker = AgentWorker(
+            self._agent_controller,
+            "",
+            proactive_instruction=instruction,
+        )
+        worker.reply_ready.connect(self._on_agent_reply)
+        worker.finished.connect(lambda: self._cleanup_worker(worker))
+        self._active_workers.add(worker)
+        worker.start()
 
     # ============================================================
     # 迷你聊天（快速对话）消息处理
@@ -309,6 +401,10 @@ class App:
         if self._agent_controller is None:
             event_bus.mini_chat_reply_received.emit("AgentController 未初始化")
             return
+
+        # 迷你聊天发言同样算用户活跃：重置主动对话状态机
+        if self._proactive_engine is not None:
+            self._proactive_engine.notify_user_activity()
 
         # 迷你聊天使用固定的 session_id，与大聊天窗口互不影响
         mini_configurable = {
@@ -334,8 +430,7 @@ class App:
             agent_message: AgentController.chat() 返回的 AgentMessage。
         """
         content = (
-            getattr(agent_message, "msg", None)
-            or getattr(agent_message, "message", None)
+            getattr(agent_message, "message", None)
             or str(agent_message)
         )
         

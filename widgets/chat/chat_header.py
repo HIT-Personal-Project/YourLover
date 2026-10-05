@@ -46,8 +46,8 @@ class ChatHeader(BaseWidget):
         """
         self._title: str = "YourLover"
         self._status: str = "在线"
-        # 新增内部状态，便于后续更新
-        self._affection_value: int = 100
+        # 新增内部状态，便于后续更新（好感度与 AffinityService 一致：初始 0）
+        self._affection_value: int = 0
         self._emotional_state: str = "开心😊"
         super().__init__(parent)
 

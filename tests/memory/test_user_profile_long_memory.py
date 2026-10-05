@@ -8,12 +8,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent.memory.long_memory import (
+from agent.memory.profile_service import (
     DEFAULT_PROFILE_MODEL,
-    LongMemoryService,
     OllamaProfileCandidateExtractor,
     ProfileCandidateExtractor,
     ProfileCandidateProposal,
+    UserProfileManager,
 )
 from agent.memory.profile_candidate import ProfileCandidate
 from agent.memory.profile_store import ProfileConflictError, ProfileStore
@@ -129,7 +129,7 @@ class OllamaCandidateExtractorTests(unittest.TestCase):
         extractor = OllamaProfileCandidateExtractor()
 
         with mock.patch(
-            "agent.memory.long_memory.urllib_request.urlopen",
+            "agent.memory.profile_service.urllib_request.urlopen",
             return_value=response,
         ):
             proposals = extractor.extract(
@@ -198,8 +198,8 @@ class ProfileStoreTests(unittest.TestCase):
             )
 
 
-class LongMemoryServiceTests(unittest.TestCase):
-    """验证长期记忆服务对候选执行自动应用、等待确认和拒绝。"""
+class UserProfileManagerTests(unittest.TestCase):
+    """验证画像管理器对候选执行自动应用、等待确认和拒绝。"""
 
     def setUp(self) -> None:
         self.temp_directory = tempfile.TemporaryDirectory()
@@ -218,7 +218,7 @@ class LongMemoryServiceTests(unittest.TestCase):
             "以后叫我阿辰",
             needs_confirmation=False,
         )
-        service = LongMemoryService(
+        service = UserProfileManager(
             self.store,
             FixedCandidateExtractor([proposal]),
         )
@@ -245,7 +245,7 @@ class LongMemoryServiceTests(unittest.TestCase):
             None,
             needs_confirmation=True,
         )
-        service = LongMemoryService(
+        service = UserProfileManager(
             self.store,
             FixedCandidateExtractor([proposal]),
         )
@@ -270,7 +270,7 @@ class LongMemoryServiceTests(unittest.TestCase):
             "以后叫我",
             needs_confirmation=False,
         )
-        service = LongMemoryService(
+        service = UserProfileManager(
             self.store,
             FixedCandidateExtractor([proposal]),
         )
@@ -289,7 +289,7 @@ class LongMemoryServiceTests(unittest.TestCase):
             "我已经完成初始化",
             needs_confirmation=False,
         )
-        service = LongMemoryService(
+        service = UserProfileManager(
             self.store,
             FixedCandidateExtractor([proposal]),
         )
@@ -299,8 +299,39 @@ class LongMemoryServiceTests(unittest.TestCase):
         self.assertEqual(results[0].status, ProfileCandidateStatus.REJECTED)
         self.assertFalse(service.get_profile("user-1").onboarding_completed)
 
-    def test_default_candidate_model_name_is_qwen3_8b(self) -> None:
-        self.assertEqual(DEFAULT_PROFILE_MODEL, "qwen3:8b")
+    def test_default_candidate_model_name_is_qwen2_5_3b(self) -> None:
+        self.assertEqual(DEFAULT_PROFILE_MODEL, "qwen2.5:3b")
+
+
+class ProfileTriggerTests(unittest.TestCase):
+    """画像候选提取触发词规则的单元测试。"""
+
+    def test_trigger_matches_profile_statements(self) -> None:
+        from agent.memory.profile_service import matches_profile_trigger
+
+        for text in [
+            "以后叫我阿辰",
+            "别叫我小名",
+            "我叫张伟",
+            "我是做程序员的",
+            "我是一名学生",
+            "我比较喜欢用中文交流",
+            "我的时区是东八区",
+            "你可以叫我队长",
+        ]:
+            self.assertTrue(matches_profile_trigger(text), f"应命中触发词: {text}")
+
+    def test_trigger_skips_plain_chit_chat(self) -> None:
+        from agent.memory.profile_service import matches_profile_trigger
+
+        for text in [
+            "今天天气真不错",
+            "我有点累了",
+            "嗯好的，我知道了",
+            "",
+            "你觉得我该怎么做",
+        ]:
+            self.assertFalse(matches_profile_trigger(text), f"不应命中触发词: {text}")
 
 
 if __name__ == "__main__":

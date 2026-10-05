@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
-from app.memory.classifier import MemoryClassifier
-from app.memory.profile_candidate import ProfileCandidate
+from agent.memory.classifier import MemoryClassifier
+from agent.memory.profile_candidate import ProfileCandidate
 
 
 def test_explicit_short_answer_preference_creates_semantic_memory():

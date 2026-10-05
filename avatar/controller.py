@@ -156,6 +156,7 @@ class Live2DController (AvatarControllerProtocol):
             print(f"[Live2DAvatarController] 说话动画播放失败 {motion}: {e}")
     def change_expression(self, expression_name: str) -> None:
         """切换表情。"""
+        expression_name = expression_name
         if self.model:
             try:
                 self.model.SetExpression(expression_name)

@@ -256,6 +256,30 @@ class SessionStore:
             )
         ]
 
+    def get_last_user_activity_time(self, user_id: str) -> float | None:
+        """查询某用户跨全部会话的最后一次发言时间戳（speaker='User'）。
+
+        供时间感知与主动对话机制使用：
+            - 注入 system prompt 的"上次用户回复时间"（跨会话取最近一条）；
+            - ProactiveEngine 启动时初始化静默计时的起点。
+        用户从未发言时返回 None。
+        """
+        self._require_id(user_id, "user_id")
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    """
+                    SELECT MAX(speak_time) AS last_time
+                    FROM session_memory_items
+                    WHERE user_id = ? AND speaker = 'User'
+                    """,
+                    (user_id,),
+                ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise SessionStoreError("Failed to query last user activity time") from exc
+        value = row["last_time"] if row is not None else None
+        return float(value) if value is not None else None
+
     def load_memory_item_records(
         self,
         user_id: str,

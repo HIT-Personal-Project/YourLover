@@ -3,10 +3,30 @@ from __future__ import annotations
 from langchain_core.messages import AIMessage
 
 from agent.agent.ChatAgent import ChatAgent
-from agent.memory.retriever import MemoryRetriever
+from agent.memory.long_term_memory import LongTermMemory
+from agent.memory.profile_service import (
+    ProfileCandidateExtractor,
+    ProfileCandidateProposal,
+    UserProfileManager,
+)
+from agent.memory.profile_store import ProfileStore
 from agent.memory.session_store import SessionStore
+from agent.memory.short_term_memory import ShortTermMemory
 from agent.memory.store import FileMemoryStore
 from core.config import Settings
+
+
+class NoopCandidateExtractor(ProfileCandidateExtractor):
+    """测试提取器：不产生画像候选，避免测试连接真实 Ollama。"""
+
+    def extract(
+        self,
+        user_id: str,
+        user_message: str,
+        session_id: str | None = None,
+        message_id: str | None = None,
+    ) -> list[ProfileCandidateProposal]:
+        return []
 
 
 class RecordingLLM:
@@ -24,15 +44,20 @@ class RecordingLLM:
 
 
 def _build_agent(tmp_path, llm, session_store):
-    """创建使用临时长短期存储的 ChatAgent。"""
-    memory_store = FileMemoryStore(tmp_path / "users")
+    """创建使用临时长短期存储的 ChatAgent（三大管理器注入临时路径）。"""
+    long_term = LongTermMemory(store=FileMemoryStore(tmp_path / "users"))
+    short_term = ShortTermMemory(session_store=session_store)
+    profile = UserProfileManager(
+        store=ProfileStore(tmp_path / "profiles.sqlite3"),
+        candidate_extractor=NoopCandidateExtractor(),
+    )
     return ChatAgent(
         llm,
         Settings(),
         {"configurable": {"thread_id": "default"}},
-        memory_store=memory_store,
-        memory_retriever=MemoryRetriever(memory_store),
-        session_store=session_store,
+        short_term_memory=short_term,
+        long_term_memory=long_term,
+        user_profile_manager=profile,
     )
 
 

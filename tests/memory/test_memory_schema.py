@@ -1,6 +1,6 @@
 import json
 
-from app.memory.schema import (
+from agent.memory.schema import (
     EpisodicMemory,
     MemoryEvidence,
     MemoryStatus,

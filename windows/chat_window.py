@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from agent.memory.session_store import SessionRecord, SessionStore, SessionStoreError
 from core.agent_event import AgentEvent
 from core.event_bus import event_bus
+from utils.message_filter import extract_emotion
 from windows.base_window import BaseWindow
 from widgets.chat.chat_header import ChatHeader
 from widgets.chat.chat_history import ChatHistory, MessageRole
@@ -174,11 +175,16 @@ class ChatWindow(BaseWindow):
                 if record.session_id != "mini-chat"
             ]
             restored_sessions = [
-                (record, self._load_display_messages(record.session_id))
+                (record, *self._load_display_messages(record.session_id))
                 for record in records
             ]
-            for record, messages in restored_sessions:
-                self._sessions[record.session_id] = {"messages": messages}
+            for record, messages, emotion, love in restored_sessions:
+                # 缓存消息及最近一条 AI 消息的情绪/好感度，切换会话时恢复到头部
+                self._sessions[record.session_id] = {
+                    "messages": messages,
+                    "emotion": emotion,
+                    "love": love,
+                }
                 self._session_list.add_session(
                     SessionData(
                         session_id=record.session_id,
@@ -202,17 +208,35 @@ class ChatWindow(BaseWindow):
     def _load_display_messages(
         self,
         session_id: str,
-    ) -> list[tuple[MessageRole, str]]:
-        """读取一个 Session 的可见消息，只恢复正常的用户和助手对话。"""
+    ) -> tuple[list[tuple[MessageRole, str]], str | None, int | None]:
+        """读取一个 Session 的可见消息，只恢复正常的用户和助手对话。
+
+        返回 (消息列表, 最近AI情绪, 最近AI好感度)：
+        - AI 消息会剥离 <<情绪>> 与 {{好感度}} 标记（与实时聊天展示一致）；
+        - 情绪取最后一条带标记的 AI 消息的首个标记；
+        - 好感度取最后一条 AI 消息的 MemoryItem.love（轮末快照）。
+        """
         messages: list[tuple[MessageRole, str]] = []
+        emotion: str | None = None
+        love: int | None = None
         for item in self._session_store.load_memory_items(self._user_id, session_id):
             if item.type != "Chat":
                 continue
             role = self._display_role(item.speaker)
             content = self._message_content(item.message.content)
-            if role is not None and content:
+            if role is None or not content:
+                continue
+            if role == MessageRole.AGENT:
+                # 历史消息同样要过滤标记，避免 <<Happy>>{{+3}} 残留在气泡里
+                content, emotions = extract_emotion(content)
+                content = content.strip()
+                if emotions:
+                    emotion = emotions[0]
+                if isinstance(item.love, int):
+                    love = item.love
+            if content:
                 messages.append((role, content))
-        return messages
+        return messages, emotion, love
 
     @staticmethod
     def _display_role(speaker: str) -> MessageRole | None:
@@ -322,6 +346,14 @@ class ChatWindow(BaseWindow):
             bubble = self._history.append_message(role, content)
             if role == MessageRole.AGENT:
                 self._current_agent_bubble = None  # 历史消息不参与流式更新
+
+        # 恢复头部状态：最近一条 AI 消息的情绪与好感度（无历史则保持现状）
+        emotion = session.get("emotion")
+        if emotion in {"Happy", "Sad", "Angry", "Shy"}:
+            event_bus.state_emotion_change.emit(emotion)
+        love = session.get("love")
+        if love is not None:
+            event_bus.state_love_change.emit(int(love))
 
     def _on_session_deleted(self, session_id: str) -> None:
         """删除会话，逻辑是先删除数据库记录，再移除界面缓存。

@@ -1,18 +1,28 @@
-"""长期记忆协调服务，目前先实现用户画像候选维护流程。
+"""用户画像管理器：画像读取、候选抽取与确认流程的统一入口。
 
-本模块把“大模型理解自然语言”和“系统最终写入画像”严格分开：
-- ProfileCandidateExtractor 只生成候选；
-- OllamaProfileCandidateExtractor 是默认 qwen3:8b 实现；
-- LongMemoryService 校验权限、证据和置信度；
-- ProfileStore 执行最终 SQLite 写入并记录修改日志。
+用户画像负责"稳定、结构化、受权限控制"的用户信息（称呼、语言等），
+与动态长期记忆（LongTermMemory）分离。
+
+本模块把"大模型理解自然语言"和"系统最终写入画像"严格分开：
+    - ProfileCandidateExtractor 只生成候选（接口）；
+    - OllamaProfileCandidateExtractor 是默认 qwen2.5:3b 实现；
+    - UserProfileManager 校验权限、证据和置信度；
+    - ProfileStore 执行最终 SQLite 写入并记录审计日志。
+
+模型永远只能产生候选；字段白名单和 actor 权限由 user_profile.py 的
+确定性校验保证，不依赖提示词自觉。
 
 未来接入其它本地模型或云 API 时，只需新增 ProfileCandidateExtractor 子类，
-用户画像模型、数据库和权限策略不需要变化。
+画像模型、数据库和权限策略不需要变化。
+
+（本文件原名 long_memory.py，因名字与动态长期记忆模块容易混淆而改名；
+原服务类名 LongMemoryService 同步改为 UserProfileManager。）
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib import error as urllib_error
@@ -32,8 +42,42 @@ from agent.memory.user_profile import (
 )
 
 
-DEFAULT_PROFILE_MODEL = "qwen3:8b"
+DEFAULT_PROFILE_MODEL = "qwen2.5:3b"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+
+# 画像候选提取的触发规则：命中才调用候选模型，未命中直接跳过。
+# 覆盖 user_profile.py 白名单的 6 个字段：
+#   name / nickname / preferred_address（称呼类）、identity（身份）、
+#   language（语言）、timezone（时区）。
+# 说明：规则宁全勿缺——漏触发会导致画像信息不落库，误触发最多浪费一次
+# LLM 调用（与旧的"每轮都调"相比仍是大幅裁剪）。
+PROFILE_TRIGGER_PATTERNS: list[str] = [
+    # 姓名 / 昵称 / 称呼
+    r"我叫", r"我是", r"名字是", r"名字叫",
+    r"叫我", r"别叫我", r"请叫我", r"可以叫我", r"以后叫我", r"就叫",
+    r"称呼我", r"你叫我",
+    # 身份
+    r"我是一名", r"我是一位", r"我是做",
+    # 语言
+    r"说中文", r"说英文", r"说英语", r"用中文", r"用英文", r"用英语",
+    r"讲中文", r"讲英文", r"讲英语", r"语言",
+    # 时区
+    r"时区",
+]
+
+# 预编译：把全部触发词合并为单一正则，一次 search 完成判定
+_PROFILE_TRIGGER_RE = re.compile("|".join(PROFILE_TRIGGER_PATTERNS))
+
+
+def matches_profile_trigger(text: str) -> bool:
+    """判断用户消息是否命中画像候选触发词。
+
+    命中才需要调用候选模型（LLM）；未命中直接跳过画像候选写入，
+    避免每轮都发起一次 LLM 请求。空文本恒为 False。
+    """
+    if not text:
+        return False
+    return _PROFILE_TRIGGER_RE.search(text) is not None
 
 
 class ProfileCandidateExtractionError(RuntimeError):
@@ -42,22 +86,36 @@ class ProfileCandidateExtractionError(RuntimeError):
 
 @dataclass
 class ProfileCandidateProposal:
-    """候选提取器输出：复用 ProfileCandidate，并明确记录信息来源。"""
+    """候选提取器输出：复用 ProfileCandidate，并明确记录信息来源。
 
-    candidate: ProfileCandidate  # 画像字段和值候选
-    source_actor: ProfileActor  # USER 表示明确原话，MODEL 表示模型推断
-    explicit_quote: str | None = None  # 用户原文中的直接证据
+    字段：
+        candidate: 画像字段和值候选
+        source_actor: USER 表示明确原话，MODEL 表示模型推断
+        explicit_quote: 用户原文中的直接证据（自动应用的必要条件）
+    """
+
+    candidate: ProfileCandidate
+    source_actor: ProfileActor
+    explicit_quote: str | None = None
 
 
 @dataclass
 class ProfileProcessingResult:
-    """单条画像候选的处理结果，供界面提示或后续确认流程使用。"""
+    """单条画像候选的处理结果，供界面提示或后续确认流程使用。
 
-    field_name: str  # 候选字段
-    proposed_value: Any  # 候选值
-    status: ProfileCandidateStatus  # applied/pending/rejected
-    message: str  # 人类可读处理说明
-    candidate_id: str | None = None  # 未进入数据库的非法字段没有 ID
+    字段：
+        field_name: 候选字段
+        proposed_value: 候选值
+        status: applied/pending/rejected 三种结局
+        message: 人类可读处理说明
+        candidate_id: 候选 ID（未进入数据库的非法字段为 None）
+    """
+
+    field_name: str
+    proposed_value: Any
+    status: ProfileCandidateStatus
+    message: str
+    candidate_id: str | None = None
 
 
 class ProfileCandidateExtractor:
@@ -79,7 +137,7 @@ class ProfileCandidateExtractor:
 
 
 class OllamaProfileCandidateExtractor(ProfileCandidateExtractor):
-    """Ollama 候选提取器：默认使用 qwen3:8b 返回严格 JSON 候选。"""
+    """Ollama 候选提取器：默认使用 qwen2.5:3b 返回严格 JSON 候选。"""
 
     def __init__(
         self,
@@ -88,7 +146,14 @@ class OllamaProfileCandidateExtractor(ProfileCandidateExtractor):
         timeout: float = 30.0,
         max_candidates: int = 5,
     ) -> None:
-        """保存 Ollama 配置；初始化时不发网络请求。"""
+        """保存 Ollama 配置；初始化时不发网络请求。
+
+        参数：
+            model_name: Ollama 模型名，默认 qwen2.5:3b。
+            base_url: Ollama 服务地址。
+            timeout: 单次候选提取超时时间（秒）。
+            max_candidates: 单次最多接受的候选条数。
+        """
         if not isinstance(model_name, str) or not model_name.strip():
             raise ValueError("model_name must not be empty")
         if not isinstance(base_url, str) or not base_url.strip():
@@ -98,7 +163,7 @@ class OllamaProfileCandidateExtractor(ProfileCandidateExtractor):
         if max_candidates < 1:
             raise ValueError("max_candidates must be greater than or equal to 1")
 
-        self.model_name = model_name.strip()  # Ollama 模型名，默认 qwen3:8b
+        self.model_name = model_name.strip()  # Ollama 模型名
         self.base_url = base_url.rstrip("/")  # Ollama 服务地址
         self.timeout = float(timeout)  # 单次候选提取超时时间
         self.max_candidates = int(max_candidates)  # 防止一次生成过多候选
@@ -299,11 +364,16 @@ class OllamaProfileCandidateExtractor(ProfileCandidateExtractor):
         )
 
 
-class LongMemoryService:
-    """长期记忆协调类：当前负责画像候选审核、确认和上下文生成。
+class UserProfileManager:
+    """用户画像管理类：画像读取、候选审核、确认和上下文生成的唯一业务入口。
 
-    store 负责数据库，candidate_extractor 负责调用模型。本类是唯一业务入口，
-    负责决定候选应该自动应用、等待确认还是拒绝。
+    store 负责数据库，candidate_extractor 负责调用模型；本类决定候选应该
+    自动应用、等待确认还是拒绝。
+
+    典型用法（ChatAgent 每轮）：
+        - 读：manager.get_profile_context(user_id) 注入 system prompt；
+        - 写：manager.process_user_message(user_id, text, session_id, message_id)
+          产生候选（内部调用 Ollama，失败会抛异常，调用方需捕获降级）。
     """
 
     def __init__(
@@ -312,7 +382,13 @@ class LongMemoryService:
         candidate_extractor: ProfileCandidateExtractor | None = None,
         auto_apply_confidence: float = 0.85,
     ) -> None:
-        """初始化服务；默认使用独立 SQLite 和 Ollama qwen3:8b。"""
+        """初始化管理器；默认使用独立 SQLite 和 Ollama qwen2.5:3b。
+
+        参数：
+            store: 画像持久化存储，默认 data/memory/profiles.sqlite3。
+            candidate_extractor: 候选提取器，默认 Ollama 实现。
+            auto_apply_confidence: 用户明确候选的自动应用置信度阈值。
+        """
         if auto_apply_confidence < 0 or auto_apply_confidence > 1:
             raise ValueError("auto_apply_confidence must be between 0 and 1")
 
@@ -324,6 +400,44 @@ class LongMemoryService:
             auto_apply_confidence
         )  # 用户明确候选的自动应用阈值
 
+    # ------------------------------------------------------------------
+    # 画像读取（每轮调用，仅读 SQLite，安全）
+    # ------------------------------------------------------------------
+
+    def get_profile(self, user_id: str) -> UserProfile:
+        """读取用户画像；首次调用时自动创建空画像。"""
+        return self.store.get_or_create_profile(user_id)
+
+    def get_profile_context(self, user_id: str) -> str:
+        """把非空且允许展示的画像字段格式化为模型上下文。
+
+        直接拼进 system prompt；未设置字段不输出，无任何字段时返回空串。
+        """
+        profile = self.store.get_or_create_profile(user_id)
+        profile_data = profile.to_dict()
+        lines: list[str] = []
+
+        for field_name in (
+            "name",
+            "nickname",
+            "preferred_address",
+            "identity",
+            "language",
+            "timezone",
+        ):
+            policy = get_profile_field_policy(field_name)
+            value = profile_data.get(field_name)
+            if policy.show_in_context and value is not None:
+                lines.append(f"- {policy.display_name}：{value}")
+
+        if not lines:
+            return ""
+        return "用户画像（来自用户明确提供或确认的信息）：\n" + "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # 候选流程（每轮回复后调用；内部走 Ollama，调用方需处理异常降级）
+    # ------------------------------------------------------------------
+
     def process_user_message(
         self,
         user_id: str,
@@ -331,7 +445,12 @@ class LongMemoryService:
         session_id: str | None = None,
         message_id: str | None = None,
     ) -> list[ProfileProcessingResult]:
-        """让候选模型处理用户消息，并逐条审核、保存或应用候选。"""
+        """让候选模型处理用户消息，并逐条审核、保存或应用候选。
+
+        返回每条候选的处理结果（applied / pending / rejected）。
+        Ollama 不可用时抛 ProfileCandidateExtractionError，
+        调用方必须捕获并降级，不能中断聊天主流程。
+        """
         if not isinstance(user_id, str) or not user_id.strip():
             raise ValueError("user_id must not be empty")
         if not isinstance(user_message, str) or not user_message.strip():
@@ -350,6 +469,10 @@ class LongMemoryService:
             result = self._process_proposal(proposal, user_message)
             results.append(result)
         return results
+
+    def get_pending_candidates(self, user_id: str) -> list[StoredProfileCandidate]:
+        """读取等待用户确认的候选，供设置界面或聊天窗口展示。"""
+        return self.store.list_candidates(user_id, ProfileCandidateStatus.PENDING)
 
     def confirm_candidate(
         self,
@@ -373,6 +496,31 @@ class LongMemoryService:
         """拒绝 pending 候选，画像保持不变。"""
         return self.store.reject_candidate(user_id, candidate_id, reason)
 
+    # ------------------------------------------------------------------
+    # 直接修改（绕过候选流程，供 UI/系统使用）
+    # ------------------------------------------------------------------
+
+    def update_user_field(
+        self,
+        user_id: str,
+        field_name: str,
+        value: Any,
+        reason: str,
+    ) -> UserProfile:
+        """以 USER 权限直接更新画像字段（供设置界面等用户手动修改场景）。
+
+        MODEL 权限不可用；修改会写审计日志。
+        """
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason must not be empty")
+        return self.store.update_profile_field(
+            user_id,
+            field_name,
+            value,
+            ProfileActor.USER,
+            reason.strip(),
+        )
+
     def update_system_field(
         self,
         user_id: str,
@@ -380,7 +528,10 @@ class LongMemoryService:
         value: Any,
         reason: str,
     ) -> UserProfile:
-        """提供给应用内部逻辑的 SYSTEM 更新入口。"""
+        """以 SYSTEM 权限直接更新画像字段（供应用内部逻辑使用）。
+
+        仅 SYSTEM 允许的字段（如 onboarding_completed）走此入口。
+        """
         return self.store.update_profile_field(
             user_id,
             field_name,
@@ -389,36 +540,13 @@ class LongMemoryService:
             reason,
         )
 
-    def get_profile(self, user_id: str) -> UserProfile:
-        """读取用户画像；首次调用时自动创建空画像。"""
-        return self.store.get_or_create_profile(user_id)
+    def list_change_logs(self, user_id: str) -> list:
+        """列出画像修改审计日志（从新到旧），供画像溯源界面使用。"""
+        return self.store.list_change_logs(user_id)
 
-    def get_pending_candidates(self, user_id: str) -> list[StoredProfileCandidate]:
-        """读取等待用户确认的候选，供后续设置界面展示。"""
-        return self.store.list_candidates(user_id, ProfileCandidateStatus.PENDING)
-
-    def get_profile_context(self, user_id: str) -> str:
-        """把非空且允许展示的画像字段格式化为模型上下文。"""
-        profile = self.store.get_or_create_profile(user_id)
-        profile_data = profile.to_dict()
-        lines: list[str] = []
-
-        for field_name in (
-            "name",
-            "nickname",
-            "preferred_address",
-            "identity",
-            "language",
-            "timezone",
-        ):
-            policy = get_profile_field_policy(field_name)
-            value = profile_data.get(field_name)
-            if policy.show_in_context and value is not None:
-                lines.append(f"- {policy.display_name}：{value}")
-
-        if not lines:
-            return ""
-        return "用户画像（来自用户明确提供或确认的信息）：\n" + "\n".join(lines)
+    # ------------------------------------------------------------------
+    # 内部：候选审核
+    # ------------------------------------------------------------------
 
     def _process_proposal(
         self,
@@ -543,3 +671,20 @@ class LongMemoryService:
         if not candidate.evidence.message_ids:
             return None
         return candidate.evidence.message_ids[0]
+
+
+# 兼容别名：老代码引用 LongMemoryService 的地方可平滑迁移
+LongMemoryService = UserProfileManager
+
+
+__all__ = [
+    "UserProfileManager",
+    "LongMemoryService",  # 兼容别名
+    "ProfileCandidateExtractor",
+    "OllamaProfileCandidateExtractor",
+    "ProfileCandidateExtractionError",
+    "ProfileCandidateProposal",
+    "ProfileProcessingResult",
+    "DEFAULT_PROFILE_MODEL",
+    "DEFAULT_OLLAMA_BASE_URL",
+]

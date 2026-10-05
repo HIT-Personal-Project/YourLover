@@ -44,7 +44,7 @@ class ProfileStore:
     """画像存储类：负责画像、待确认候选和修改日志的 SQLite 存取。
 
     本类负责持久化和最终写入校验，不负责理解用户自然语言，也不负责决定
-    模型候选是否应该自动应用；这些业务判断由 LongMemoryService 完成。
+    模型候选是否应该自动应用；这些业务判断由 UserProfileManager 完成。
     """
 
     def __init__(

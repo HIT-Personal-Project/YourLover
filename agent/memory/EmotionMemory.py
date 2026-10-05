@@ -25,11 +25,16 @@ class EmotionState(TypedDict, total=False):
         user_input: 本轮用户输入文本
         user_id: 用户唯一标识（用于长期记忆归属）
         session_id: 会话唯一标识（用于短期状态）
-        memory_context: 检索到的长期记忆上下文字符串
+        profile_context: 用户画像上下文字符串（每轮从 UserProfileManager 刷新）
+        memory_context: 检索到的长期记忆上下文字符串（每轮刷新）
         session_summary: 本次会话的裁剪摘要
-        love_snapshot: 当前好感度快照（0-100）
+        love_snapshot: 当前好感度快照（0-100，每轮刷新）
         user_emo: 用户当前情感状态
         memory_write_ids: 本轮写入的长期记忆 ID 列表
+        profile_candidate_ids: 本轮产生的画像候选 ID 列表（提取失败降级时为空）
+        proactive_context: 主动消息隐藏指令（仅主动对话轮非空）：
+            由 ProactiveEngine 注入、_chat 节点消费后清空，不会出现在
+            任何消息里，也不写入历史/SQLite——用户与 UI 均不可见
     """
 
     messages: Annotated[list[BaseMessage], add_messages]
@@ -37,11 +42,14 @@ class EmotionState(TypedDict, total=False):
     user_input: str
     user_id: str
     session_id: str
+    profile_context: str
     memory_context: str
     session_summary: str
     love_snapshot: int
     user_emo: Any
     memory_write_ids: list[str]
+    profile_candidate_ids: list[str]
+    proactive_context: str
 
 
 def history_to_messages(history: list[MemoryItem]) -> list[BaseMessage]:

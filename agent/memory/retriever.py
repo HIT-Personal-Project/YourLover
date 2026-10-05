@@ -84,18 +84,22 @@ class MemoryRetriever:
     def format_memory_context(self, memories: Iterable[MemoryObject]) -> str:
         """将记忆列表格式化为可注入 system prompt 的上下文字符串。
 
-        语义记忆以 "- {content}" 形式列出，情节记忆以 "- {title}: {summary}" 形式列出，
+        语义记忆以 "- [日期] {content}" 形式列出，情节记忆以
+        "- [日期] {title}: {summary}" 形式列出（日期取 created_at 前 10 位），
         两类分别归入 "Semantic memories:" 与 "Episodic memories:" 小节。
+        带日期让模型知道"这条回忆是哪天说的"，与向量主路径 format_context
+        的 [日期] 前缀保持一致。
         """
         semantic_lines: list[str] = []
         episodic_lines: list[str] = []
 
         for memory in memories:
+            date = _memory_date(memory)
             if isinstance(memory, SemanticMemory):
-                semantic_lines.append(f"- {memory.content}")
+                semantic_lines.append(f"- {date}{memory.content}")
             elif isinstance(memory, EpisodicMemory):
                 label = f"{memory.title}: " if memory.title else ""
-                episodic_lines.append(f"- {label}{memory.summary}")
+                episodic_lines.append(f"- {date}{label}{memory.summary}")
 
         sections: list[str] = []
         if semantic_lines:
@@ -103,6 +107,18 @@ class MemoryRetriever:
         if episodic_lines:
             sections.append("Episodic memories:\n" + "\n".join(episodic_lines))
         return "\n\n".join(sections)
+
+
+def _memory_date(memory: MemoryObject) -> str:
+    """从记忆对象取日期前缀（[YYYY-MM-DD]），无时间戳时返回空串。
+
+    created_at 是 ISO 8601 字符串，前 10 位即日期部分；用于让模型
+    感知每条长期记忆的发生时间。
+    """
+    created_at = str(getattr(memory, "created_at", "") or "")
+    if len(created_at) >= 10:
+        return f"[{created_at[:10]}] "
+    return ""
 
 
 def _score_memory(memory: MemoryObject, terms: set[str]) -> float:

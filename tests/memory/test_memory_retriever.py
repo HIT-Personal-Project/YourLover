@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
-from app.memory.retriever import MemoryRetriever
-from app.memory.schema import EpisodicMemory, MemoryEvidence, SemanticMemory
-from app.memory.store import FileMemoryStore
+from agent.memory.retriever import MemoryRetriever
+from agent.memory.schema import EpisodicMemory, MemoryEvidence, SemanticMemory
+from agent.memory.store import FileMemoryStore
 
 
 def test_retrieve_exam_pressure_finds_state_and_episodic_memories(tmp_path):
@@ -119,9 +119,13 @@ def test_format_memory_context_groups_memories_without_internal_evidence(tmp_pat
     context = retriever.format_memory_context([semantic, episodic])
 
     assert "Semantic memories:" in context
-    assert "- 用户喜欢简短回答。" in context
+    # 每条记忆带 [YYYY-MM-DD] 日期前缀（取 created_at 前 10 位）
+    assert f"- [{semantic.created_at[:10]}] 用户喜欢简短回答。" in context
     assert "Episodic memories:" in context
-    assert "- 复习计划: 用户焦虑后接受了复习拆分计划。" in context
+    assert (
+        f"- [{episodic.created_at[:10]}] 复习计划: 用户焦虑后接受了复习拆分计划。"
+        in context
+    )
     assert "msg_001" not in context
     assert "不要直接暴露" not in context
     assert "77" not in context

@@ -69,7 +69,7 @@ class ProfileFieldPolicy:
 
 
 # 字段白名单是画像权限的唯一依据。大模型即使返回白名单外字段，
-# LongMemoryService 和 ProfileStore 也会拒绝，避免仅靠提示词控制权限。
+# UserProfileManager 和 ProfileStore 也会拒绝，避免仅靠提示词控制权限。
 PROFILE_FIELD_POLICIES: dict[str, ProfileFieldPolicy] = {
     "name": ProfileFieldPolicy(
         field_name="name",

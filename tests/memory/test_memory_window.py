@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from app.memory.window import (
+from agent.memory.window import (
     select_messages_for_memory_write,
     should_trim,
     trim_messages,

@@ -1,4 +1,7 @@
 
+from dataclasses import dataclass
+import threading
+
 from core.config import Settings
 from agent.agent.ChatAgent import ChatAgent
 from core.config import settings
@@ -27,6 +30,11 @@ class AgentController:
         self.is_connected = False
         self.settings = settings
         self.configurable=configurable
+        # 串行化 invoke：正常对话与主动消息可能来自不同 QThread，并发调用
+        # 同一个 LangGraph thread_id 会让 MemorySaver checkpoint 竞争，
+        # 导致 messages 状态损坏、后续所有回复变空。锁保证同一时刻
+        # 只有一个 worker 进入 LangGraph。
+        self._invoke_lock = threading.Lock()
 
 
     def chat(self,user_input:str,configurable:dict=None):
@@ -38,14 +46,51 @@ class AgentController:
 
         if not self.is_connected:
             return AgentMessage("还没有连接上大模型，不能进行聊天~","Sad")
-        state = self.agent.invoke(
-            {
-                "user_input": user_input,
-                "user_id": self.configurable["user_id"],
-                "session_id": self.configurable["session_id"],
-            }
-        )
-        return AgentMessage(state["history"][-1])
+        with self._invoke_lock:
+            state = self.agent.invoke(
+                {
+                    "user_input": user_input,
+                    "user_id": self.configurable["user_id"],
+                    "session_id": self.configurable["session_id"],
+                    "proactive_context": "",  # 显式清空，防止上一轮残留隐藏指令
+                }
+            )
+        message = AgentMessage(state["history"][-1])
+        # 时序修正：MemoryItem 在 _chat 节点构造，携带的是轮初好感度快照；
+        # judge_affinity 节点在其后才解析 {{+N}} 标记并累加，这里用轮末
+        # state 值覆盖，保证界面拿到的是本轮累加后的最新好感度
+        message.love = int(state.get("love_snapshot", message.love))
+        return message
+
+
+    def chat_proactive(self, instruction: str, configurable: dict = None):
+        """主动消息轮：注入隐藏指令让 Agent 以小爱身份主动发消息。
+
+        与 chat() 的区别：
+            - user_input 为空串：不产生用户 HumanMessage，指令走
+              proactive_context 通道拼进 system prompt（用户与 UI 不可见）；
+            - Agent 的回复（主动消息本体）照常进入消息列表、history 与
+              SQLite，聊天窗口正常显示；
+            - 主动轮不判定好感度增量（被无视的惩罚由 ProactiveEngine 直扣）。
+        """
+        if configurable is not None:
+            self.configurable = configurable
+
+        if not self.is_connected:
+            return AgentMessage("（主动消息跳过：还没有连接上大模型）", "Sad")
+        with self._invoke_lock:
+            state = self.agent.invoke(
+                {
+                    "user_input": "",
+                    "user_id": self.configurable["user_id"],
+                    "session_id": self.configurable["session_id"],
+                    "proactive_context": instruction,
+                }
+            )
+        message = AgentMessage(state["history"][-1])
+        # 主动轮好感度不变，但引擎可能刚扣过分：用轮末快照刷新界面显示
+        message.love = int(state.get("love_snapshot", message.love))
+        return message
 
     
     def chat_test(self,user_input:str,configurable:dict=None):
@@ -98,7 +143,7 @@ class ConnectState(Enum):
     OK = auto()
     FAILED = auto()
 
-
+@dataclass
 class AgentMessage:
     """解析 MemoryItem 或直接文本，传给交互界面。
 
@@ -126,14 +171,16 @@ class AgentMessage:
             self.love = source.love
             self.user_emo = source.user_emo
             self.message = source.message.content
-            self.msg = source.message.content  # 兼容属性访问
+            # self.msg = source.message.content  # 兼容属性访问
 
-            _, self.ai_emo =  extract_emotion(self.message)
+            self.message, self.ai_emo =  extract_emotion(self.message)
+            self.ai_emo = self.ai_emo[0] if self.ai_emo else "Happy"
+            print(self.message)
         else:
             # 直接指定文本和情感（用于错误提示、状态通知等）
-            self.msg = str(source)
+            # self.msg = str(source)
             self.message = str(source)  # 兼容属性访问
             self.ai_emo = emotion
             self.type = "Chat"
             self.speaker = "AI"
-            self.love = 0
+            self.love = None  # 非聊天消息无真实好感度，界面不应刷新（app.py 会跳过）
